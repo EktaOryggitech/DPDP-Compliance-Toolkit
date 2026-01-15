@@ -1,0 +1,52 @@
+# DPDP GUI Compliance Scanner - Minimal Dependencies for Development
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+pydantic-settings>=2.1.0
+
+# Database
+sqlalchemy>=2.0.0
+asyncpg>=0.28.0
+alembic>=1.13.0
+aiosqlite>=0.19.0
+
+# Task Queue
+celery>=5.3.0
+redis>=5.0.0
+
+# Web Scanning
+beautifulsoup4>=4.12.0
+httpx>=0.26.0
+
+# Windows Scanning
+opencv-python>=4.9.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.0
+python-multipart>=0.0.9
+
+# Storage
+minio>=7.2.0
+
+# Reporting
+reportlab>=4.1.0
+openpyxl>=3.1.0
+jinja2>=3.1.0
+
+# WebSocket
+websockets>=12.0
+
+# Utilities
+python-dotenv>=1.0.0
+aiofiles>=23.2.0
+pyyaml>=6.0.0
+tenacity>=8.2.0
+
+# NLP alternatives (simpler than spacy)
+langdetect>=1.0.9
+textstat>=0.7.3
