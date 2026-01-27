@@ -31,6 +31,7 @@ class User(BaseModel):
     __tablename__ = "users"
 
     # Basic Information
+    username: Mapped[Optional[str]] = mapped_column(String(100), unique=True, nullable=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)

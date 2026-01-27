@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { Outlet, Link, useLocation } from 'react-router-dom'
+import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { Dialog, Transition } from '@headlessui/react'
 import {
   Bars3Icon,
@@ -13,6 +13,8 @@ import {
 } from '@heroicons/react/24/outline'
 import clsx from 'clsx'
 import { useAuthStore } from '../stores/authStore'
+import { useSessionManager } from '../hooks/useSessionManager'
+import { authApi } from '../lib/api'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: HomeIcon },
@@ -25,7 +27,22 @@ const navigation = [
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
   const { user, logout } = useAuthStore()
+
+  // Initialize session manager for heartbeat and activity tracking
+  useSessionManager()
+
+  const handleLogout = async () => {
+    try {
+      // Call backend to invalidate session
+      await authApi.logout()
+    } catch (error) {
+      // Ignore errors - logout anyway
+    }
+    logout()
+    navigate('/login', { replace: true })
+  }
 
   return (
     <>
@@ -165,9 +182,9 @@ export default function Layout() {
                       <p className="text-xs text-primary-300">{user?.email}</p>
                     </div>
                     <button
-                      onClick={logout}
+                      onClick={handleLogout}
                       className="p-2 rounded-md hover:bg-primary-800"
-                      title="Logout"
+                      title="Sign Out"
                     >
                       <ArrowRightOnRectangleIcon className="h-5 w-5" />
                     </button>

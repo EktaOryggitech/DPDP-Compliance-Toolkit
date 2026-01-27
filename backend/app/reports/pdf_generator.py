@@ -21,9 +21,6 @@ from reportlab.graphics.shapes import Drawing, Rect
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.graphics.charts.barcharts import VerticalBarChart
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models.scan import Scan
 from app.models.finding import Finding
 from app.models.application import Application
@@ -50,9 +47,17 @@ class PDFReportGenerator:
         "low": colors.Color(0.16, 0.65, 0.27),       # Green
     }
 
-    def __init__(self, scan_id: str, db: AsyncSession):
-        self.scan_id = scan_id
-        self.db = db
+    def __init__(
+        self,
+        scan: Scan,
+        application: Application,
+        findings: List[Finding],
+        include_evidence: bool = True,
+    ):
+        self.scan = scan
+        self.application = application
+        self.findings = findings
+        self.include_evidence = include_evidence
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
 
@@ -109,10 +114,10 @@ class PDFReportGenerator:
         Returns:
             BytesIO buffer containing the PDF
         """
-        # Fetch data
-        scan = await self._get_scan_data()
-        findings = await self._get_findings()
-        application = await self._get_application(scan.application_id)
+        # Use data passed in during initialization
+        scan = self.scan
+        findings = self.findings
+        application = self.application
 
         # Create PDF buffer
         buffer = io.BytesIO()
@@ -156,29 +161,6 @@ class PDFReportGenerator:
 
         buffer.seek(0)
         return buffer
-
-    async def _get_scan_data(self) -> Scan:
-        """Fetch scan data from database."""
-        result = await self.db.execute(
-            select(Scan).where(Scan.id == self.scan_id)
-        )
-        return result.scalar_one()
-
-    async def _get_findings(self) -> List[Finding]:
-        """Fetch all findings for the scan."""
-        result = await self.db.execute(
-            select(Finding)
-            .where(Finding.scan_id == self.scan_id)
-            .order_by(Finding.severity, Finding.dpdp_section)
-        )
-        return result.scalars().all()
-
-    async def _get_application(self, app_id) -> Application:
-        """Fetch application data."""
-        result = await self.db.execute(
-            select(Application).where(Application.id == app_id)
-        )
-        return result.scalar_one()
 
     def _build_cover_page(
         self,
@@ -227,7 +209,7 @@ class PDFReportGenerator:
         elements.append(Spacer(1, 1 * inch))
 
         # Compliance score badge
-        score = scan.compliance_score or 0
+        score = scan.overall_score or 0
         score_color = (
             colors.green if score >= 80 else
             colors.orange if score >= 60 else
@@ -280,7 +262,7 @@ class PDFReportGenerator:
         summary_text = f"""
         This compliance audit was conducted on <b>{scan.pages_scanned}</b> pages/screens
         and identified <b>{len(findings)}</b> compliance findings. The overall compliance
-        score is <b>{scan.compliance_score or 0}%</b>.
+        score is <b>{scan.overall_score or 0}%</b>.
 
         <br/><br/>
         <b>Finding Summary:</b>
@@ -404,7 +386,7 @@ class PDFReportGenerator:
                 table_data.append([
                     Paragraph(f"<font color='{color}'>{sev.upper()}</font>", self.styles["Normal"]),
                     f.title[:50] + "..." if len(f.title) > 50 else f.title,
-                    (f.page_url or "")[:30] + "..." if f.page_url and len(f.page_url) > 30 else f.page_url or "",
+                    (f.location or "")[:30] + "..." if f.location and len(f.location) > 30 else f.location or "",
                 ])
 
             if len(section_findings) > 5:
@@ -448,7 +430,7 @@ class PDFReportGenerator:
                 ["Severity", sev.upper()],
                 ["DPDP Section", finding.dpdp_section or "N/A"],
                 ["Check Type", finding.check_type.value if hasattr(finding.check_type, 'value') else str(finding.check_type)],
-                ["Page/Location", finding.page_url or "N/A"],
+                ["Page/Location", finding.location or "N/A"],
             ]
 
             details_table = Table(details, colWidths=[1.5*inch, 4.5*inch])
@@ -543,7 +525,7 @@ class PDFReportGenerator:
         canvas.setFont("Helvetica", 9)
         canvas.setFillColor(colors.gray)
         canvas.drawString(72, A4[1] - 50, "DPDP Compliance Report")
-        canvas.drawRightString(A4[0] - 72, A4[1] - 50, f"Scan ID: {self.scan_id[:8]}...")
+        canvas.drawRightString(A4[0] - 72, A4[1] - 50, f"Scan ID: {str(self.scan.id)[:8]}...")
 
         # Header line
         canvas.setStrokeColor(colors.Color(0.05, 0.29, 0.53))

@@ -44,6 +44,14 @@ class CheckType(str, enum.Enum):
     PRIVACY_NOTICE_PURPOSE = "privacy_notice_purpose"
     PRIVACY_NOTICE_RIGHTS = "privacy_notice_rights"
     PRIVACY_NOTICE_CONTACT = "privacy_notice_contact"
+    PRIVACY_NOTICE_MISSING_LINK = "privacy_notice_missing_link"
+    PRIVACY_NOTICE_MISSING_DATA_TYPES = "privacy_notice_missing_data_types"
+    PRIVACY_NOTICE_MISSING_PURPOSE = "privacy_notice_missing_purpose"
+    PRIVACY_NOTICE_MISSING_FIDUCIARY = "privacy_notice_missing_fiduciary"
+    PRIVACY_NOTICE_MISSING_RIGHTS = "privacy_notice_missing_rights"
+    PRIVACY_NOTICE_MISSING_GRIEVANCE = "privacy_notice_missing_grievance"
+    PRIVACY_NOTICE_INCOMPLETE = "privacy_notice_incomplete"
+    PRIVACY_NOTICE_LANGUAGE = "privacy_notice_language"
 
     # Section 6 - Consent
     CONSENT_CHECKBOX_PRESENT = "consent_checkbox_present"

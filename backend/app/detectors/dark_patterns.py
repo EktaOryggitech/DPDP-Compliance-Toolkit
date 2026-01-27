@@ -2,14 +2,38 @@
 DPDP GUI Compliance Scanner - Dark Pattern Detector
 
 Detects manipulative UI patterns that violate DPDP compliance.
+Based on Real-Time-Examples-Scenarios.md format for detailed findings.
 """
 import re
-from typing import List, Dict, Any
-from bs4 import BeautifulSoup
+from typing import List, Dict, Any, Optional
+from bs4 import BeautifulSoup, Tag
 
 from app.detectors.base import BaseDetector
-from app.models.finding import CheckType, Finding, FindingSeverity
+from app.models.finding import CheckType, Finding, FindingSeverity, FindingStatus
 from app.scanners.web.crawler import CrawledPage
+
+
+def get_element_html(element: Tag, max_length: int = 300) -> str:
+    """Extract clean HTML from element for display."""
+    html = str(element)
+    # Clean up whitespace
+    html = re.sub(r'\s+', ' ', html)
+    return html[:max_length] + "..." if len(html) > max_length else html
+
+
+def generate_visual_box(title: str, content_lines: List[str], width: int = 60) -> str:
+    """Generate ASCII box diagram for visual representation."""
+    lines = []
+    border = "─" * (width - 2)
+    lines.append(f"┌{border}┐")
+    lines.append(f"│  {title:<{width-6}}  │")
+    lines.append(f"├{border}┤")
+    for line in content_lines:
+        # Truncate if too long
+        display_line = line[:width-6] if len(line) > width-6 else line
+        lines.append(f"│  {display_line:<{width-6}}  │")
+    lines.append(f"└{border}┘")
+    return "\n".join(lines)
 
 
 class DarkPatternDetector(BaseDetector):
@@ -78,19 +102,59 @@ class DarkPatternDetector(BaseDetector):
         clickable.extend(soup.find_all("a"))
 
         for element in clickable:
-            text = element.get_text().lower().strip()
+            text = element.get_text().strip()
+            text_lower = text.lower()
 
             for pattern in shame_patterns:
-                if re.search(pattern, text, re.IGNORECASE):
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    # Generate detailed extra_data
+                    element_html = get_element_html(element)
+
+                    # Generate fixed code
+                    code_before = element_html
+                    code_after = re.sub(
+                        r'>.*<',
+                        '>No, thanks<',
+                        element_html
+                    ) if '<' in element_html else f'<button class="btn">No, thanks</button>'
+
+                    # Visual representation
+                    visual_content = [
+                        f"Pattern Type: CONFIRM SHAMING",
+                        f"",
+                        f"Current Button Text:",
+                        f"  '{text[:50]}...' " if len(text) > 50 else f"  '{text}'",
+                        f"       ↑",
+                        f"  VIOLATION: Guilt-inducing language",
+                        f"",
+                        f"Neutral Alternative:",
+                        f"  'No, thanks' or 'Decline'",
+                    ]
+                    visual_box = generate_visual_box("DARK PATTERN DETECTED", visual_content)
+
                     findings.append(Finding(
-                        check_type=CheckType.DARK_PATTERN_CONFIRMSHAMING,
+                        check_type=CheckType.DARK_PATTERN_CONFIRM_SHAMING,
                         severity=FindingSeverity.MEDIUM,
+                        status=FindingStatus.FAIL,
                         title="Confirmshaming detected",
                         description=f"Button/link uses guilt-inducing language: '{text[:100]}'. This manipulates users into making choices they might not want.",
-                        page_url=page.url,
-                        element_html=str(element)[:500],
+                        location=page.url,
+                        element_selector=code_before,
                         dpdp_section=self.dpdp_section,
                         remediation="Use neutral language for decline options, e.g., 'No, thanks' or 'Decline'.",
+                        extra_data={
+                            "pattern_type": "confirm_shaming",
+                            "element_text": text,
+                            "code_before": code_before,
+                            "code_after": code_after,
+                            "penalty_risk": "Consumer Protection Act violation",
+                            "visual_representation": visual_box,
+                            "fix_steps": [
+                                "Replace guilt-inducing text with neutral language",
+                                "Use equal visual weight for both Yes and No options",
+                                "Remove emotional manipulation"
+                            ]
+                        }
                     ))
                     break
 
@@ -120,15 +184,62 @@ class DarkPatternDetector(BaseDetector):
                 ]
 
                 if any(kw in text for kw in important_keywords):
+                    element_html = get_element_html(small)
+
+                    # Extract font size from style
+                    style = small.get('style', '')
+                    font_match = re.search(r'font-size:\s*(\d+)px', style, re.I)
+                    current_font_size = font_match.group(1) if font_match else "small"
+
+                    # Generate fixed code
+                    code_before = element_html
+                    code_after = re.sub(
+                        r'font-size:\s*\d+px',
+                        'font-size: 14px',
+                        element_html
+                    )
+
+                    # Visual representation
+                    visual_content = [
+                        f"Pattern Type: MISDIRECTION",
+                        f"",
+                        f"Current Font Size: {current_font_size}px",
+                        f"Required Minimum: 12px",
+                        f"",
+                        f"Important keywords detected:",
+                        f"  • {[kw for kw in important_keywords if kw in text][:3]}",
+                        f"",
+                        f"Text Preview:",
+                        f"  '{text[:40]}...'",
+                    ]
+                    visual_box = generate_visual_box("MISDIRECTION DETECTED", visual_content)
+
                     findings.append(Finding(
                         check_type=CheckType.DARK_PATTERN_MISDIRECTION,
                         severity=FindingSeverity.MEDIUM,
+                        status=FindingStatus.FAIL,
                         title="Important information in very small text",
-                        description=f"Important consent/privacy-related text is displayed in very small font: '{text[:100]}'",
-                        page_url=page.url,
-                        element_html=str(small)[:500],
+                        description=f"Important consent/privacy-related text is displayed in very small font ({current_font_size}px): '{text[:100]}'",
+                        location=page.url,
+                        element_selector=code_before,
                         dpdp_section=self.dpdp_section,
                         remediation="Display important privacy and consent information in readable font sizes (at least 12px).",
+                        extra_data={
+                            "pattern_type": "misdirection",
+                            "element_text": text[:200],
+                            "current_font_size": f"{current_font_size}px",
+                            "required_font_size": "12px minimum",
+                            "code_before": code_before,
+                            "code_after": code_after,
+                            "penalty_risk": "DPDP Section 6 - Invalid consent due to lack of clarity",
+                            "visual_representation": visual_box,
+                            "keywords_found": [kw for kw in important_keywords if kw in text],
+                            "fix_steps": [
+                                f"Increase font-size from {current_font_size}px to at least 12px",
+                                "Ensure important text has equal visual prominence",
+                                "Consider using bold or contrasting colors for emphasis"
+                            ]
+                        }
                     ))
 
         return findings
@@ -155,11 +266,12 @@ class DarkPatternDetector(BaseDetector):
 
         if len(consent_modals) > 1:
             findings.append(Finding(
-                check_type=CheckType.DARK_PATTERN_NAGGING,
+                check_type=CheckType.DARK_PATTERN_URGENCY,
                 severity=FindingSeverity.LOW,
+                status=FindingStatus.FAIL,
                 title="Multiple consent/subscription popups detected",
                 description=f"Page contains {len(consent_modals)} modal elements asking for consent or subscriptions. This may indicate nagging behavior.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section=self.dpdp_section,
                 remediation="Limit consent requests to once per session. Respect user's choice.",
             ))
@@ -192,14 +304,73 @@ class DarkPatternDetector(BaseDetector):
             has_exit = any(kw in text_content for kw in exit_keywords)
 
             if not has_exit:
+                # Visual representation for Roach Motel
+                visual_content = [
+                    f"Pattern Type: ROACH MOTEL",
+                    f"",
+                    f"Page: Account/Settings Page",
+                    f"",
+                    f"Expected Options (MISSING):",
+                    f"  ✗ Delete Account",
+                    f"  ✗ Unsubscribe",
+                    f"  ✗ Cancel Subscription",
+                    f"  ✗ Remove My Data",
+                    f"",
+                    f"VIOLATION: Easy sign-up, hard exit",
+                    f"",
+                    f"DPDP Section 6(6) - Withdrawal Requirement",
+                ]
+                visual_box = generate_visual_box("ROACH MOTEL DETECTED", visual_content)
+
+                # Sample code to add
+                code_fix_example = '''
+<div class="danger-zone card">
+  <h3>Danger Zone</h3>
+  <button class="btn btn-danger" onclick="deleteAccount()">
+    Delete My Account
+  </button>
+  <button class="btn btn-outline" onclick="unsubscribe()">
+    Unsubscribe from All
+  </button>
+  <a href="/data-deletion" class="link">
+    Request Data Deletion
+  </a>
+</div>'''
+
                 findings.append(Finding(
-                    check_type=CheckType.DARK_PATTERN_ROACH_MOTEL,
+                    check_type=CheckType.DARK_PATTERN_HIDDEN_OPTION,
                     severity=FindingSeverity.HIGH,
-                    title="No account deletion/cancellation option found",
-                    description="Account settings page does not show clear options to delete account, unsubscribe, or cancel services.",
-                    page_url=page.url,
+                    status=FindingStatus.FAIL,
+                    title="No account deletion/cancellation option found (Roach Motel)",
+                    description="Account settings page does not show clear options to delete account, unsubscribe, or cancel services. Users can easily sign up but cannot easily leave.",
+                    location=page.url,
                     dpdp_section=self.dpdp_section,
-                    remediation="Provide clear and accessible options to delete account, unsubscribe, and cancel services.",
+                    remediation="Provide clear and accessible options to delete account, unsubscribe, and cancel services. DPDP Section 6(6) requires easy withdrawal.",
+                    extra_data={
+                        "pattern_type": "roach_motel",
+                        "missing_options": [
+                            "Delete Account",
+                            "Unsubscribe",
+                            "Cancel Subscription",
+                            "Remove My Data",
+                            "Opt Out"
+                        ],
+                        "code_fix_example": code_fix_example,
+                        "penalty_risk": "₹50 crore - DPDP Section 6(6) violation",
+                        "visual_representation": visual_box,
+                        "fix_steps": [
+                            "Add 'Delete Account' button prominently on settings page",
+                            "Add 'Unsubscribe' option for each subscription",
+                            "Provide 'Cancel Subscription' link for paid services",
+                            "Create dedicated 'Data Deletion Request' page",
+                            "Ensure exit options are as easy as sign-up"
+                        ],
+                        "dpdp_reference": {
+                            "section": "Section 6(6)",
+                            "requirement": "Withdrawal of consent must be as easy as giving consent",
+                            "penalty": "Up to ₹50 crore"
+                        }
+                    }
                 ))
 
         return findings
@@ -224,12 +395,13 @@ class DarkPatternDetector(BaseDetector):
                 action_text = onclick + href
                 if any(kw in action_text for kw in ["consent", "accept", "agree", "subscribe"]):
                     findings.append(Finding(
-                        check_type=CheckType.DARK_PATTERN_BAIT_SWITCH,
+                        check_type=CheckType.DARK_PATTERN_FORCED_ACTION,
                         severity=FindingSeverity.HIGH,
+                        status=FindingStatus.FAIL,
                         title="Misleading close/dismiss button",
                         description=f"Button labeled '{btn_text}' appears to dismiss but actually triggers consent/subscription action.",
-                        page_url=page.url,
-                        element_html=str(btn)[:500],
+                        location=page.url,
+                        element_selector=str(btn)[:500],
                         dpdp_section=self.dpdp_section,
                         remediation="Ensure button labels accurately describe their action. Close buttons should only close, not consent.",
                     ))
@@ -259,12 +431,13 @@ class DarkPatternDetector(BaseDetector):
 
             if any(term in text for term in important_terms):
                 findings.append(Finding(
-                    check_type=CheckType.DARK_PATTERN_HIDDEN_INFO,
+                    check_type=CheckType.DARK_PATTERN_HIDDEN_OPTION,
                     severity=FindingSeverity.MEDIUM,
+                    status=FindingStatus.FAIL,
                     title="Important privacy information in collapsed/hidden section",
                     description="Key data processing information is hidden in an expandable section, making it less visible to users.",
-                    page_url=page.url,
-                    element_html=str(container)[:500],
+                    location=page.url,
+                    element_selector=str(container)[:500],
                     dpdp_section=self.dpdp_section,
                     remediation="Display important privacy and data sharing information prominently, not in collapsed sections.",
                 ))
@@ -298,14 +471,51 @@ class DarkPatternDetector(BaseDetector):
                 consent_context = any(kw in text_content for kw in ["consent", "agree", "data", "privacy", "subscribe"])
 
                 if consent_context:
+                    # Find the urgency text element
+                    urgency_elements = soup.find_all(string=re.compile(pattern, re.I))
+                    urgency_text = matches[0] if matches else pattern
+
+                    # Visual representation
+                    visual_content = [
+                        f"Pattern Type: FALSE URGENCY",
+                        f"",
+                        f"Detected Language:",
+                        f"  '{urgency_text}'",
+                        f"",
+                        f"Context: Near consent/data collection",
+                        f"",
+                        f"VIOLATION:",
+                        f"  Creating artificial time pressure",
+                        f"  to manipulate consent decisions",
+                        f"",
+                        f"Consumer Protection Act - Dark Patterns",
+                    ]
+                    visual_box = generate_visual_box("FALSE URGENCY DETECTED", visual_content)
+
                     findings.append(Finding(
-                        check_type=CheckType.DARK_PATTERN_FALSE_URGENCY,
+                        check_type=CheckType.DARK_PATTERN_URGENCY,
                         severity=FindingSeverity.MEDIUM,
+                        status=FindingStatus.FAIL,
                         title="False urgency near consent/data collection",
-                        description=f"Urgency-creating language found near consent or data collection elements. Pattern: '{pattern}'",
-                        page_url=page.url,
+                        description=f"Urgency-creating language found near consent or data collection elements. Detected: '{urgency_text}'",
+                        location=page.url,
                         dpdp_section=self.dpdp_section,
-                        remediation="Avoid creating artificial urgency when requesting consent or collecting personal data.",
+                        remediation="Avoid creating artificial urgency when requesting consent or collecting personal data. Remove countdown timers and scarcity language from consent flows.",
+                        extra_data={
+                            "pattern_type": "false_urgency",
+                            "detected_pattern": pattern,
+                            "urgency_text": urgency_text,
+                            "penalty_risk": "Consumer Protection Act - Dark Patterns violation",
+                            "visual_representation": visual_box,
+                            "examples_found": matches[:5],
+                            "fix_steps": [
+                                "Remove countdown timers from consent/subscription pages",
+                                "Remove 'Only X left' scarcity messages",
+                                "Remove 'Hurry' and 'Act now' language",
+                                "Allow users time to make informed decisions",
+                                "Consent should be freely given, not under pressure"
+                            ]
+                        }
                     ))
                     break  # Only report once per page
 

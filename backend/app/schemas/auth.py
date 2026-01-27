@@ -11,8 +11,8 @@ from app.models.user import UserRole
 
 class LoginRequest(BaseModel):
     """Login request schema."""
-    email: EmailStr
-    password: str = Field(min_length=8)
+    email: str = Field(description="Username or email")
+    password: str = Field(min_length=6)
 
 
 class RegisterRequest(BaseModel):
@@ -30,6 +30,17 @@ class Token(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int = Field(description="Access token expiry in seconds")
+
+
+class LoginResponse(BaseModel):
+    """Login response with token and user info."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = Field(description="Access token expiry in seconds")
+    inactivity_timeout: int = Field(default=300, description="Session inactivity timeout in seconds")
+    heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
+    user: "UserResponse"
 
 
 class TokenPayload(BaseModel):

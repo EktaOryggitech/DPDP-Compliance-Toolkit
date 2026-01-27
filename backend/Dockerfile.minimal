@@ -10,7 +10,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,6 +24,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-hin \
     # For OpenCV headless (no GL libs needed)
     libglib2.0-0 \
+    # For Playwright/Chromium
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy minimal requirements
@@ -32,12 +49,17 @@ COPY requirements-docker.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements-docker.txt
 
+# Install Playwright browsers (Chromium only) and make accessible
+RUN playwright install chromium && \
+    chmod -R 755 /opt/playwright
+
 # Copy application code
 COPY . .
 
-# Create non-root user
+# Create non-root user and grant access
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app && \
+    chown -R appuser:appuser /opt/playwright
 USER appuser
 
 # Expose port

@@ -6,7 +6,7 @@ import { authApi } from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
 interface LoginForm {
-  email: string
+  username: string
   password: string
 }
 
@@ -24,8 +24,22 @@ export default function Login() {
   const onSubmit = async (data: LoginForm) => {
     setIsLoading(true)
     try {
-      const response = await authApi.login(data.email, data.password)
-      login(response.access_token, response.user)
+      const response = await authApi.login(data.username, data.password)
+
+      // Extract session config from response
+      const sessionConfig = {
+        inactivityTimeout: response.inactivity_timeout || 300,
+        heartbeatInterval: response.heartbeat_interval || 30,
+      }
+
+      // Login with token, refresh token, user, and session config
+      login(
+        response.access_token,
+        response.refresh_token,
+        response.user,
+        sessionConfig
+      )
+
       toast.success('Welcome back!')
       navigate('/')
     } catch (error: any) {
@@ -50,25 +64,21 @@ export default function Login() {
         <form className="mt-8 space-y-6" onSubmit={handleSubmit(onSubmit)}>
           <div className="rounded-md shadow-sm -space-y-px">
             <div>
-              <label htmlFor="email" className="sr-only">
-                Email address
+              <label htmlFor="username" className="sr-only">
+                Username
               </label>
               <input
-                id="email"
-                type="email"
-                autoComplete="email"
-                {...register('email', {
-                  required: 'Email is required',
-                  pattern: {
-                    value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                    message: 'Invalid email address',
-                  },
+                id="username"
+                type="text"
+                autoComplete="username"
+                {...register('username', {
+                  required: 'Username is required',
                 })}
                 className="appearance-none rounded-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-t-md focus:outline-none focus:ring-primary-500 focus:border-primary-500 focus:z-10 sm:text-sm"
-                placeholder="Email address"
+                placeholder="Username"
               />
-              {errors.email && (
-                <p className="mt-1 text-xs text-red-600">{errors.email.message}</p>
+              {errors.username && (
+                <p className="mt-1 text-xs text-red-600">{errors.username.message}</p>
               )}
             </div>
             <div>

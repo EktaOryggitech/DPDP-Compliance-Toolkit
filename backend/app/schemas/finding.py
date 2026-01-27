@@ -34,9 +34,11 @@ class FindingResponse(BaseModel):
     severity: FindingSeverity
     confidence: Optional[float]
     location: Optional[str]
+    element_selector: Optional[str] = None
     title: str
     description: Optional[str]
     remediation: Optional[str]
+    extra_data: Optional[Dict] = None  # Detailed finding data (code fixes, visual representation, etc.)
     created_at: datetime
 
     class Config:
@@ -44,11 +46,43 @@ class FindingResponse(BaseModel):
 
 
 class FindingDetail(FindingResponse):
-    """Detailed finding response with evidence."""
+    """Detailed finding response with evidence and extra data."""
     element_xpath: Optional[str]
     element_selector: Optional[str]
-    metadata: Optional[Dict]
+    extra_data: Optional[Dict] = None  # Detailed finding data (code_before, code_after, visual, etc.)
+    metadata: Optional[Dict] = None
     evidence: List[EvidenceResponse] = []
+
+    # Computed fields for easy access
+    @property
+    def code_before(self) -> Optional[str]:
+        """Get code before fix from extra_data."""
+        return self.extra_data.get("code_before") if self.extra_data else None
+
+    @property
+    def code_after(self) -> Optional[str]:
+        """Get code after fix from extra_data."""
+        return self.extra_data.get("code_after") if self.extra_data else None
+
+    @property
+    def visual_representation(self) -> Optional[str]:
+        """Get visual ASCII diagram from extra_data."""
+        return self.extra_data.get("visual_representation") if self.extra_data else None
+
+    @property
+    def fix_steps(self) -> Optional[List[str]]:
+        """Get remediation steps from extra_data."""
+        return self.extra_data.get("fix_steps") if self.extra_data else None
+
+    @property
+    def penalty_risk(self) -> Optional[str]:
+        """Get penalty risk from extra_data."""
+        return self.extra_data.get("penalty_risk") if self.extra_data else None
+
+    @property
+    def dpdp_reference(self) -> Optional[Dict]:
+        """Get DPDP reference details from extra_data."""
+        return self.extra_data.get("dpdp_reference") if self.extra_data else None
 
 
 class FindingsBySection(BaseModel):
@@ -71,3 +105,33 @@ class ComplianceScoreBreakdown(BaseModel):
     section_11_14_rights: Optional[float] = None
     dark_patterns: Optional[float] = None
     overall: Optional[float] = None
+
+
+class FindingSummary(BaseModel):
+    """Lightweight finding summary for page-wise display."""
+    id: uuid.UUID
+    title: str
+    severity: FindingSeverity
+    status: FindingStatus
+    check_type: CheckType
+    dpdp_section: Optional[str]
+    description: Optional[str]
+    remediation: Optional[str] = None
+    element_selector: Optional[str] = None
+    extra_data: Optional[Dict] = None  # Detailed finding data
+
+    class Config:
+        from_attributes = True
+
+
+class FindingsByPage(BaseModel):
+    """Findings grouped by page/URL."""
+    page_url: str
+    page_title: Optional[str] = None
+    findings_count: int
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    info_count: int = 0
+    findings: List[FindingSummary]

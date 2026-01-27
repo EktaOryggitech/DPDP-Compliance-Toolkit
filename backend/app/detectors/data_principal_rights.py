@@ -8,8 +8,22 @@ from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 
 from app.detectors.base import BaseDetector
-from app.models.finding import CheckType, Finding, FindingSeverity
+from app.models.finding import CheckType, Finding, FindingSeverity, FindingStatus
 from app.scanners.web.crawler import CrawledPage
+
+
+def generate_visual_box(title: str, content_lines: List[str], width: int = 60) -> str:
+    """Generate ASCII box diagram for visual representation."""
+    lines = []
+    border = "─" * (width - 2)
+    lines.append(f"┌{border}┐")
+    lines.append(f"│  {title:<{width-6}}  │")
+    lines.append(f"├{border}┤")
+    for line in content_lines:
+        display_line = line[:width-6] if len(line) > width-6 else line
+        lines.append(f"│  {display_line:<{width-6}}  │")
+    lines.append(f"└{border}┘")
+    return "\n".join(lines)
 
 
 class DataPrincipalRightsDetector(BaseDetector):
@@ -145,14 +159,64 @@ class DataPrincipalRightsDetector(BaseDetector):
         )
 
         if not has_access_info:
+            visual_content = [
+                "VIOLATION: Missing Data Access Mechanism",
+                "",
+                "DPDP Section 11 - Right to Access",
+                "",
+                "Required Elements (NOT FOUND):",
+                "  ✗ How to request data access",
+                "  ✗ Timeline for response",
+                "  ✗ Format of data provided",
+                "  ✗ Process description",
+                "",
+                "Penalty: Up to ₹200 crore",
+            ]
+            visual_box = generate_visual_box("DATA ACCESS RIGHT MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.RIGHTS_ACCESS_MISSING,
+                check_type=CheckType.RIGHTS_ACCESS,
                 severity=FindingSeverity.HIGH,
+                status=FindingStatus.FAIL,
                 title="No data access mechanism described",
                 description="Privacy policy does not describe how users can access their personal data. DPDP Section 11 requires providing access to personal data upon request.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 11",
                 remediation="Add clear information about how users can request and obtain a copy of their personal data, including the process and timeline.",
+                extra_data={
+                    "violation_type": "missing_access_right",
+                    "keywords_searched": self.ACCESS_RIGHTS_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="data-access">
+  <h2>Right to Access Your Data (Section 11)</h2>
+  <p>You have the right to:</p>
+  <ul>
+    <li>Request a summary of your personal data</li>
+    <li>Know the processing activities</li>
+    <li>Obtain identities of other Data Fiduciaries with whom data was shared</li>
+  </ul>
+  <h3>How to Request</h3>
+  <ol>
+    <li>Email: dataaccess@company.com</li>
+    <li>Use our online form: <a href="/data-access-request">Request Form</a></li>
+  </ol>
+  <p>Response time: Within 72 hours of identity verification</p>
+</section>''',
+                    "penalty_risk": "₹200 crore - DPDP Section 11 violation",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 11",
+                        "requirement": "Data Principal has right to obtain summary of personal data and processing activities",
+                        "penalty": "Up to ₹200 crore"
+                    },
+                    "fix_steps": [
+                        "Add 'Right to Access' section in privacy policy",
+                        "Create online data access request form",
+                        "Specify response timeline (recommended: 72 hours)",
+                        "Describe format of data provided (JSON, PDF, etc.)",
+                        "Include Hindi version: डेटा एक्सेस का अधिकार"
+                    ]
+                }
             ))
 
         return findings
@@ -166,14 +230,64 @@ class DataPrincipalRightsDetector(BaseDetector):
         )
 
         if not has_correction_info:
+            visual_content = [
+                "VIOLATION: Missing Data Correction Mechanism",
+                "",
+                "DPDP Section 12 - Right to Correction",
+                "",
+                "Required Elements (NOT FOUND):",
+                "  ✗ How to request data correction",
+                "  ✗ Self-service profile editing",
+                "  ✗ Process for disputed corrections",
+                "",
+                "Penalty: Up to ₹200 crore",
+            ]
+            visual_box = generate_visual_box("DATA CORRECTION RIGHT MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.RIGHTS_CORRECTION_MISSING,
+                check_type=CheckType.RIGHTS_CORRECTION,
                 severity=FindingSeverity.HIGH,
+                status=FindingStatus.FAIL,
                 title="No data correction mechanism described",
                 description="Privacy policy does not describe how users can correct/update their personal data. DPDP Section 12 requires allowing correction of inaccurate data.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 12",
                 remediation="Add information about how users can request correction of inaccurate or incomplete personal data.",
+                extra_data={
+                    "violation_type": "missing_correction_right",
+                    "keywords_searched": self.CORRECTION_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="data-correction">
+  <h2>Right to Correction (Section 12)</h2>
+  <p>You have the right to correct inaccurate or incomplete personal data.</p>
+
+  <h3>Self-Service Correction</h3>
+  <p>Update your profile directly: <a href="/profile/edit">Edit Profile</a></p>
+
+  <h3>Request Correction</h3>
+  <p>For data you cannot edit yourself:</p>
+  <ol>
+    <li>Email: correction@company.com</li>
+    <li>Specify the data to be corrected</li>
+    <li>Provide supporting documentation if needed</li>
+  </ol>
+  <p>Response time: Within 15 days</p>
+</section>''',
+                    "penalty_risk": "₹200 crore - DPDP Section 12 violation",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 12",
+                        "requirement": "Data Principal has right to correction of inaccurate or misleading personal data",
+                        "penalty": "Up to ₹200 crore"
+                    },
+                    "fix_steps": [
+                        "Add 'Right to Correction' section in privacy policy",
+                        "Provide self-service profile editing feature",
+                        "Create correction request process for non-editable data",
+                        "Specify response timeline",
+                        "Include Hindi version: डेटा सुधार का अधिकार"
+                    ]
+                }
             ))
 
         return findings
@@ -187,14 +301,68 @@ class DataPrincipalRightsDetector(BaseDetector):
         )
 
         if not has_erasure_info:
+            visual_content = [
+                "VIOLATION: Missing Data Erasure Mechanism",
+                "",
+                "DPDP Section 12 - Right to Erasure",
+                "",
+                "Required Elements (NOT FOUND):",
+                "  ✗ Account deletion option",
+                "  ✗ Data deletion request process",
+                "  ✗ Deletion confirmation mechanism",
+                "",
+                "Penalty: Up to ₹200 crore",
+            ]
+            visual_box = generate_visual_box("DATA ERASURE RIGHT MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.RIGHTS_ERASURE_MISSING,
+                check_type=CheckType.RIGHTS_ERASURE,
                 severity=FindingSeverity.HIGH,
+                status=FindingStatus.FAIL,
                 title="No data deletion mechanism described",
                 description="Privacy policy does not describe how users can delete their personal data. DPDP Section 12 requires allowing erasure when data is no longer needed.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 12",
                 remediation="Add clear information about how users can request deletion of their personal data and account.",
+                extra_data={
+                    "violation_type": "missing_erasure_right",
+                    "keywords_searched": self.ERASURE_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="data-deletion">
+  <h2>Right to Erasure (Section 12)</h2>
+  <p>You have the right to request deletion of your personal data when:</p>
+  <ul>
+    <li>Data is no longer needed for the original purpose</li>
+    <li>You withdraw consent</li>
+    <li>Data has been unlawfully processed</li>
+  </ul>
+
+  <h3>How to Request Deletion</h3>
+  <a href="/account/delete" class="btn btn-danger">Delete My Account</a>
+  <p>Or email: deletion@company.com</p>
+
+  <h3>What Happens Next</h3>
+  <ol>
+    <li>Identity verification (24 hours)</li>
+    <li>Data deletion process (7 days)</li>
+    <li>Confirmation email sent</li>
+  </ol>
+</section>''',
+                    "penalty_risk": "₹200 crore - DPDP Section 12 violation",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 12",
+                        "requirement": "Data Principal has right to erasure of personal data",
+                        "penalty": "Up to ₹200 crore"
+                    },
+                    "fix_steps": [
+                        "Add 'Delete Account' option in settings",
+                        "Create data deletion request process",
+                        "Specify deletion timeline and confirmation",
+                        "Explain any data retention exceptions (legal requirements)",
+                        "Include Hindi version: डेटा विलोपन का अधिकार"
+                    ]
+                }
             ))
 
         return findings
@@ -213,14 +381,70 @@ class DataPrincipalRightsDetector(BaseDetector):
         )
 
         if not has_grievance_info:
+            visual_content = [
+                "CRITICAL: No Grievance Mechanism Found",
+                "",
+                "DPDP Section 13 - Mandatory Requirement",
+                "",
+                "Required Elements (NOT FOUND):",
+                "  ✗ Grievance Officer designation",
+                "  ✗ Contact details (email/phone)",
+                "  ✗ Complaint submission process",
+                "  ✗ Response timeline",
+                "",
+                "Penalty: Up to ₹250 crore",
+            ]
+            visual_box = generate_visual_box("GRIEVANCE MECHANISM MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.GRIEVANCE_MECHANISM_MISSING,
+                check_type=CheckType.RIGHTS_GRIEVANCE,
                 severity=FindingSeverity.CRITICAL,
+                status=FindingStatus.FAIL,
                 title="No grievance redressal mechanism found",
                 description="No grievance officer or complaint mechanism described. DPDP Section 13 mandates a grievance redressal mechanism.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 13",
                 remediation="Appoint a Grievance Officer and publish their name, contact details, and the grievance submission process.",
+                extra_data={
+                    "violation_type": "missing_grievance_mechanism",
+                    "keywords_searched": self.GRIEVANCE_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="grievance">
+  <h2>Grievance Redressal (Section 13)</h2>
+
+  <h3>Grievance Officer</h3>
+  <p><strong>Name:</strong> [Officer Name]</p>
+  <p><strong>Designation:</strong> Data Protection Officer</p>
+  <p><strong>Email:</strong> grievance@company.com</p>
+  <p><strong>Phone:</strong> +91-XXXXXXXXXX</p>
+  <p><strong>Address:</strong> [Office Address]</p>
+
+  <h3>How to File a Grievance</h3>
+  <ol>
+    <li>Email your concern to grievance@company.com</li>
+    <li>Include your registered email and description</li>
+    <li>Receive acknowledgment within 24 hours</li>
+    <li>Resolution within 7 days</li>
+  </ol>
+
+  <a href="/grievance/submit" class="btn">Submit Grievance</a>
+</section>''',
+                    "penalty_risk": "₹250 crore - DPDP Section 13 violation (CRITICAL)",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 13",
+                        "requirement": "Data Fiduciary must have grievance redressal mechanism and respond within prescribed time",
+                        "penalty": "Up to ₹250 crore"
+                    },
+                    "fix_steps": [
+                        "Appoint a Grievance Officer immediately",
+                        "Publish officer name and contact details",
+                        "Create grievance submission form/process",
+                        "Set up tracking system for complaints",
+                        "Ensure response within 7 days (DPDP requirement)",
+                        "Include Hindi: शिकायत निवारण अधिकारी"
+                    ]
+                }
             ))
         else:
             # Check for grievance officer contact details
@@ -272,14 +496,59 @@ class DataPrincipalRightsDetector(BaseDetector):
             missing.append("response timeline")
 
         if missing:
+            visual_content = [
+                "INCOMPLETE: Grievance Officer Details",
+                "",
+                "Found: Grievance mechanism mentioned",
+                "",
+                "Missing Elements:",
+            ]
+            for m in missing:
+                visual_content.append(f"  ✗ {m}")
+            visual_content.extend([
+                "",
+                "DPDP Section 13 - Complete details required",
+                "Response timeline: 7 days mandatory",
+            ])
+            visual_box = generate_visual_box("INCOMPLETE GRIEVANCE DETAILS", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.GRIEVANCE_DETAILS_INCOMPLETE,
+                check_type=CheckType.RIGHTS_GRIEVANCE,
                 severity=FindingSeverity.MEDIUM,
+                status=FindingStatus.FAIL,
                 title="Incomplete grievance officer details",
                 description=f"Grievance mechanism mentioned but missing: {', '.join(missing)}. Complete contact details are required.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 13",
                 remediation=f"Add the following to grievance section: {', '.join(missing)}. Response should be within 7 days as per DPDP.",
+                extra_data={
+                    "violation_type": "incomplete_grievance_details",
+                    "missing_elements": missing,
+                    "has_email": has_email,
+                    "has_phone": has_phone,
+                    "has_name": has_name,
+                    "has_timeline": has_timeline,
+                    "code_fix_example": '''
+<div class="grievance-officer">
+  <h3>Grievance Officer Details</h3>
+  <p><strong>Name:</strong> Mr./Ms. [Full Name]</p>
+  <p><strong>Designation:</strong> Grievance Officer / DPO</p>
+  <p><strong>Email:</strong> grievance@company.com</p>
+  <p><strong>Phone:</strong> +91-XXXXXXXXXX</p>
+  <p><strong>Response Time:</strong> Within 7 days of receiving complaint</p>
+</div>''',
+                    "penalty_risk": "₹50 crore - DPDP Section 13 partial violation",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 13",
+                        "requirement": "Complete grievance officer details with response timeline",
+                        "penalty": "Up to ₹250 crore"
+                    },
+                    "fix_steps": [f"Add {m}" for m in missing] + [
+                        "Ensure 7-day response timeline is mentioned",
+                        "Provide multiple contact methods (email + phone)"
+                    ]
+                }
             ))
 
         return findings
@@ -300,14 +569,69 @@ class DataPrincipalRightsDetector(BaseDetector):
         )
 
         if has_other_rights and not has_nomination_info:
+            visual_content = [
+                "MISSING: Nomination Provision",
+                "",
+                "DPDP Section 14 - Right to Nominate",
+                "",
+                "Data Principal can nominate another person",
+                "to exercise rights in case of:",
+                "  • Death of Data Principal",
+                "  • Incapacity of Data Principal",
+                "",
+                "This is a recommended practice",
+            ]
+            visual_box = generate_visual_box("NOMINATION PROVISION MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.NOMINATION_PROVISION_MISSING,
+                check_type=CheckType.RIGHTS_NOMINATION,
                 severity=FindingSeverity.LOW,
+                status=FindingStatus.FAIL,
                 title="No nomination provision described",
                 description="Privacy policy describes data rights but doesn't mention nomination of another person to exercise rights (in case of death/incapacity). DPDP Section 14 allows for nomination.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section="Section 14",
                 remediation="Add information about how users can nominate someone to exercise their data rights in case of death or incapacity.",
+                extra_data={
+                    "violation_type": "missing_nomination_provision",
+                    "keywords_searched": self.NOMINATION_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="nomination">
+  <h2>Right to Nominate (Section 14)</h2>
+  <p>You can nominate another person to exercise your data rights
+  in case of your death or incapacity.</p>
+
+  <h3>How to Nominate</h3>
+  <ol>
+    <li>Go to Account Settings → Nomination</li>
+    <li>Add nominee details (name, relationship, contact)</li>
+    <li>Nominee will need to verify identity to exercise rights</li>
+  </ol>
+
+  <a href="/settings/nomination" class="btn">Add Nominee</a>
+
+  <h3>What Can Nominee Do?</h3>
+  <ul>
+    <li>Access your personal data</li>
+    <li>Request correction or deletion</li>
+    <li>Exercise all Data Principal rights on your behalf</li>
+  </ul>
+</section>''',
+                    "penalty_risk": "₹10 crore - DPDP Section 14 (lower severity)",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 14",
+                        "requirement": "Data Principal may nominate another to exercise rights in case of death/incapacity",
+                        "penalty": "Up to ₹50 crore"
+                    },
+                    "fix_steps": [
+                        "Add 'Nomination' section in privacy policy",
+                        "Create nomination feature in account settings",
+                        "Specify what rights nominee can exercise",
+                        "Include verification process for nominee",
+                        "Include Hindi: नामांकन का अधिकार"
+                    ]
+                }
             ))
 
         return findings
@@ -351,14 +675,81 @@ class DataRetentionDetector(BaseDetector):
         )
 
         if not has_retention_info:
+            visual_content = [
+                "VIOLATION: No Data Retention Policy",
+                "",
+                "DPDP Section 8 - Data Retention",
+                "",
+                "Required Information (NOT FOUND):",
+                "  ✗ How long data is kept",
+                "  ✗ Retention criteria",
+                "  ✗ Deletion timeline after purpose fulfilled",
+                "",
+                "Penalty: Up to ₹50 crore",
+            ]
+            visual_box = generate_visual_box("DATA RETENTION POLICY MISSING", visual_content)
+
             findings.append(Finding(
-                check_type=CheckType.DATA_RETENTION_MISSING,
+                check_type=CheckType.OTHER,
                 severity=FindingSeverity.MEDIUM,
+                status=FindingStatus.FAIL,
                 title="No data retention policy found",
                 description="Privacy policy does not describe how long personal data is retained. DPDP requires data to be deleted when no longer needed for the stated purpose.",
-                page_url=page.url,
+                location=page.url,
                 dpdp_section=self.dpdp_section,
                 remediation="Add clear information about data retention periods for each type of data collected and the criteria for determining retention.",
+                extra_data={
+                    "violation_type": "missing_retention_policy",
+                    "keywords_searched": self.RETENTION_KEYWORDS[:5],
+                    "code_fix_example": '''
+<section id="data-retention">
+  <h2>Data Retention Policy</h2>
+
+  <table>
+    <tr>
+      <th>Data Type</th>
+      <th>Retention Period</th>
+      <th>Reason</th>
+    </tr>
+    <tr>
+      <td>Account Information</td>
+      <td>Until account deletion + 30 days</td>
+      <td>Service provision</td>
+    </tr>
+    <tr>
+      <td>Transaction Records</td>
+      <td>7 years</td>
+      <td>Legal/tax requirements</td>
+    </tr>
+    <tr>
+      <td>Usage Logs</td>
+      <td>90 days</td>
+      <td>Security and analytics</td>
+    </tr>
+    <tr>
+      <td>Marketing Preferences</td>
+      <td>Until consent withdrawn</td>
+      <td>Marketing communications</td>
+    </tr>
+  </table>
+
+  <p>Data is securely deleted after retention period expires.</p>
+</section>''',
+                    "penalty_risk": "₹50 crore - DPDP Section 8 violation",
+                    "visual_representation": visual_box,
+                    "dpdp_reference": {
+                        "section": "Section 8",
+                        "requirement": "Personal data shall be erased when no longer necessary for the purpose",
+                        "penalty": "Up to ₹50 crore"
+                    },
+                    "fix_steps": [
+                        "Add 'Data Retention' section in privacy policy",
+                        "Specify retention period for each data category",
+                        "Explain legal basis for retention",
+                        "Describe secure deletion process",
+                        "Include Hindi: डेटा प्रतिधारण नीति"
+                    ]
+                }
             ))
         else:
             # Check for specific retention periods
@@ -372,14 +763,59 @@ class DataRetentionDetector(BaseDetector):
             )
 
             if not has_specific_period:
+                visual_content = [
+                    "ISSUE: Vague Retention Period",
+                    "",
+                    "Found: Retention policy exists",
+                    "Problem: No specific time periods",
+                    "",
+                    "Vague phrases detected:",
+                    "  ✗ 'as long as necessary'",
+                    "  ✗ 'reasonable period'",
+                    "  ✗ 'until no longer needed'",
+                    "",
+                    "Required: Specific periods (e.g., '2 years')",
+                ]
+                visual_box = generate_visual_box("VAGUE RETENTION PERIOD", visual_content)
+
                 findings.append(Finding(
-                    check_type=CheckType.DATA_RETENTION_VAGUE,
+                    check_type=CheckType.OTHER,
                     severity=FindingSeverity.LOW,
+                    status=FindingStatus.FAIL,
                     title="Data retention period not specific",
                     description="Retention policy mentioned but no specific time periods given. Vague language like 'as long as necessary' is insufficient.",
-                    page_url=page.url,
+                    location=page.url,
                     dpdp_section=self.dpdp_section,
                     remediation="Specify exact retention periods (e.g., '2 years from last activity') rather than vague statements.",
+                    extra_data={
+                        "violation_type": "vague_retention_period",
+                        "code_before": '''
+<!-- Vague retention language (BAD) -->
+<p>We retain your data as long as necessary for the purposes
+described in this policy.</p>''',
+                        "code_after": '''
+<!-- Specific retention periods (GOOD) -->
+<p>We retain your data for the following periods:</p>
+<ul>
+  <li>Account data: Duration of account + 30 days</li>
+  <li>Transaction history: 7 years (legal requirement)</li>
+  <li>Support tickets: 2 years from resolution</li>
+  <li>Marketing data: Until consent withdrawn</li>
+</ul>''',
+                        "penalty_risk": "₹10 crore - Best practice violation",
+                        "visual_representation": visual_box,
+                        "dpdp_reference": {
+                            "section": "Section 8",
+                            "requirement": "Clear retention periods for transparency",
+                            "penalty": "Up to ₹50 crore"
+                        },
+                        "fix_steps": [
+                            "Replace vague language with specific periods",
+                            "Use format: 'X years/months/days'",
+                            "Specify trigger (e.g., 'from last activity')",
+                            "Create retention schedule table"
+                        ]
+                    }
                 ))
 
         return findings

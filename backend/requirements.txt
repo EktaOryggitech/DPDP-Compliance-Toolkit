@@ -5,6 +5,7 @@ fastapi==0.109.2
 uvicorn[standard]==0.27.1
 pydantic==2.6.1
 pydantic-settings==2.1.0
+email-validator>=2.0.0
 
 # Database
 sqlalchemy==2.0.25
@@ -22,8 +23,8 @@ beautifulsoup4==4.12.3
 lxml>=5.0.0
 httpx==0.26.0
 
-# Windows Scanning
-pywinauto==0.6.8
+# Windows Scanning (only install on Windows)
+pywinauto==0.6.8; sys_platform == "win32"
 opencv-python==4.9.0.80
 pytesseract==0.3.10
 Pillow>=10.0.0
@@ -56,10 +57,9 @@ pyyaml==6.0.1
 tenacity==8.2.3
 
 # Testing
-pytest==8.0.0
-pytest-asyncio==0.23.4
-pytest-cov==4.1.0
-httpx==0.26.0
+pytest>=7.0.0,<8
+pytest-asyncio>=0.23.0
+pytest-cov>=4.0.0
 
 # Development
 black==24.1.1

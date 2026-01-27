@@ -22,7 +22,9 @@ from app.schemas.scan import (
     ScanProgress,
     ScanSummary,
 )
+from app.schemas.finding import FindingsByPage, FindingSummary
 from app.schemas.common import Message, PaginatedResponse, PaginationParams
+from app.models.finding import FindingSeverity
 
 router = APIRouter()
 
@@ -174,9 +176,10 @@ async def get_scan(
     # Get findings breakdown
     findings_by_section = {}
     findings_by_type = {}
+    page_findings_map = {}  # Group findings by page URL
 
     findings_result = await db.execute(
-        select(Finding).where(Finding.scan_id == scan_id)
+        select(Finding).where(Finding.scan_id == scan_id).order_by(Finding.created_at)
     )
     findings = findings_result.scalars().all()
 
@@ -189,11 +192,67 @@ async def get_scan(
         check_type = finding.check_type.value
         findings_by_type[check_type] = findings_by_type.get(check_type, 0) + 1
 
+        # By page/URL
+        page_url = finding.location or "Unknown Page"
+        if page_url not in page_findings_map:
+            page_findings_map[page_url] = {
+                "findings": [],
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "info": 0,
+            }
+
+        # Add finding to page group
+        page_findings_map[page_url]["findings"].append(FindingSummary(
+            id=finding.id,
+            title=finding.title,
+            severity=finding.severity,
+            status=finding.status,
+            check_type=finding.check_type,
+            dpdp_section=finding.dpdp_section,
+            description=finding.description,
+            remediation=finding.remediation,
+            element_selector=finding.element_selector,
+            extra_data=finding.extra_data,
+        ))
+
+        # Count by severity
+        if finding.severity == FindingSeverity.CRITICAL:
+            page_findings_map[page_url]["critical"] += 1
+        elif finding.severity == FindingSeverity.HIGH:
+            page_findings_map[page_url]["high"] += 1
+        elif finding.severity == FindingSeverity.MEDIUM:
+            page_findings_map[page_url]["medium"] += 1
+        elif finding.severity == FindingSeverity.LOW:
+            page_findings_map[page_url]["low"] += 1
+        else:
+            page_findings_map[page_url]["info"] += 1
+
+    # Build findings_by_page list
+    findings_by_page = []
+    for page_url, page_data in page_findings_map.items():
+        findings_by_page.append(FindingsByPage(
+            page_url=page_url,
+            findings_count=len(page_data["findings"]),
+            critical_count=page_data["critical"],
+            high_count=page_data["high"],
+            medium_count=page_data["medium"],
+            low_count=page_data["low"],
+            info_count=page_data["info"],
+            findings=page_data["findings"],
+        ))
+
+    # Sort by findings count (most findings first)
+    findings_by_page.sort(key=lambda x: x.findings_count, reverse=True)
+
     response = ScanDetailResponse.model_validate(scan)
     response.application_name = app_name
     response.duration_seconds = scan.duration_seconds
     response.findings_by_section = findings_by_section
     response.findings_by_type = findings_by_type
+    response.findings_by_page = findings_by_page
 
     return response
 
@@ -247,7 +306,7 @@ async def create_scan(
     # Queue scan task with Celery
     from app.workers.tasks.scan_tasks import run_web_scan, run_windows_scan
 
-    if application.app_type == ApplicationType.WEB:
+    if application.type == ApplicationType.WEB:
         run_web_scan.delay(str(scan.id), str(application.id))
     else:
         run_windows_scan.delay(str(scan.id), str(application.id))
@@ -284,6 +343,42 @@ async def cancel_scan(
     await db.commit()
 
     return Message(message="Scan cancelled successfully")
+
+
+@router.delete("/{scan_id}", response_model=Message)
+async def delete_scan(
+    scan_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """
+    Delete a scan and its findings.
+    """
+    result = await db.execute(select(Scan).where(Scan.id == scan_id))
+    scan = result.scalar_one_or_none()
+
+    if not scan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found",
+        )
+
+    if scan.status in [ScanStatus.RUNNING]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete a running scan. Cancel it first.",
+        )
+
+    # Delete associated findings first
+    await db.execute(
+        Finding.__table__.delete().where(Finding.scan_id == scan_id)
+    )
+
+    # Delete the scan
+    await db.delete(scan)
+    await db.commit()
+
+    return Message(message="Scan deleted successfully")
 
 
 @router.websocket("/ws/{scan_id}")

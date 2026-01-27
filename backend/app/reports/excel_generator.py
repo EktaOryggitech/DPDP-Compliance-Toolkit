@@ -16,9 +16,6 @@ from openpyxl.utils import get_column_letter
 from openpyxl.chart import PieChart, BarChart, Reference
 from openpyxl.chart.label import DataLabelList
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models.scan import Scan
 from app.models.finding import Finding
 from app.models.application import Application
@@ -49,9 +46,17 @@ class ExcelReportGenerator:
         "white": "FFFFFF",
     }
 
-    def __init__(self, scan_id: str, db: AsyncSession):
-        self.scan_id = scan_id
-        self.db = db
+    def __init__(
+        self,
+        scan: Scan,
+        application: Application,
+        findings: List[Finding],
+        include_raw_data: bool = True,
+    ):
+        self.scan = scan
+        self.application = application
+        self.findings = findings
+        self.include_raw_data = include_raw_data
         self.wb = Workbook()
         self._setup_styles()
 
@@ -86,10 +91,10 @@ class ExcelReportGenerator:
         Returns:
             BytesIO buffer containing the Excel file
         """
-        # Fetch data
-        scan = await self._get_scan_data()
-        findings = await self._get_findings()
-        application = await self._get_application(scan.application_id)
+        # Use data passed in during initialization
+        scan = self.scan
+        findings = self.findings
+        application = self.application
 
         # Remove default sheet
         del self.wb["Sheet"]
@@ -108,29 +113,6 @@ class ExcelReportGenerator:
         buffer.seek(0)
 
         return buffer
-
-    async def _get_scan_data(self) -> Scan:
-        """Fetch scan data from database."""
-        result = await self.db.execute(
-            select(Scan).where(Scan.id == self.scan_id)
-        )
-        return result.scalar_one()
-
-    async def _get_findings(self) -> List[Finding]:
-        """Fetch all findings for the scan."""
-        result = await self.db.execute(
-            select(Finding)
-            .where(Finding.scan_id == self.scan_id)
-            .order_by(Finding.severity, Finding.dpdp_section)
-        )
-        return result.scalars().all()
-
-    async def _get_application(self, app_id) -> Application:
-        """Fetch application data."""
-        result = await self.db.execute(
-            select(Application).where(Application.id == app_id)
-        )
-        return result.scalar_one()
 
     def _create_summary_sheet(
         self,
@@ -156,7 +138,7 @@ class ExcelReportGenerator:
         info_data = [
             ["Application Name", application.name],
             ["URL/Path", application.url or "N/A"],
-            ["Type", application.app_type.value if hasattr(application.app_type, 'value') else str(application.app_type)],
+            ["Type", application.type.value if hasattr(application.type, 'value') else str(application.type)],
             ["Scan Date", (scan.completed_at or scan.created_at).strftime("%Y-%m-%d %H:%M")],
             ["Pages Scanned", scan.pages_scanned],
             ["Scan ID", str(scan.id)],
@@ -171,7 +153,7 @@ class ExcelReportGenerator:
         ws["A12"] = "Compliance Score"
         ws["A12"].font = Font(bold=True, size=14)
 
-        score = scan.compliance_score or 0
+        score = scan.overall_score or 0
         ws["B13"] = f"{score}%"
         ws["B13"].font = Font(bold=True, size=24, color=
             self.COLORS["low"] if score >= 80 else
@@ -254,7 +236,7 @@ class ExcelReportGenerator:
             ws.cell(row=row, column=4, value=check_type)
             ws.cell(row=row, column=5, value=finding.title)
             ws.cell(row=row, column=6, value=finding.description)
-            ws.cell(row=row, column=7, value=finding.page_url or "N/A")
+            ws.cell(row=row, column=7, value=finding.location or "N/A")
             ws.cell(row=row, column=8, value=finding.element_selector or "N/A")
             ws.cell(row=row, column=9, value=finding.remediation or "N/A")
             ws.cell(row=row, column=10, value=finding.created_at.strftime("%Y-%m-%d %H:%M"))
@@ -317,7 +299,7 @@ class ExcelReportGenerator:
                 ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=self.COLORS.get(sev, "CCCCCC"))
                 ws.cell(row=row, column=2, value=finding.title)
                 ws.cell(row=row, column=3, value=finding.description[:200] if finding.description else "")
-                ws.cell(row=row, column=4, value=finding.page_url or "")
+                ws.cell(row=row, column=4, value=finding.location or "")
                 ws.cell(row=row, column=5, value=finding.remediation or "")
                 row += 1
 
@@ -368,7 +350,7 @@ class ExcelReportGenerator:
             for finding in sev_findings:
                 ws.cell(row=row, column=1, value=finding.dpdp_section or "N/A")
                 ws.cell(row=row, column=2, value=finding.title)
-                ws.cell(row=row, column=3, value=finding.page_url or "N/A")
+                ws.cell(row=row, column=3, value=finding.location or "N/A")
                 ws.cell(row=row, column=4, value=finding.remediation or "N/A")
                 row += 1
 
@@ -463,7 +445,7 @@ class ExcelReportGenerator:
             ["Duration", self._calculate_duration(scan)],
             ["Pages Scanned", scan.pages_scanned],
             ["Findings Count", scan.findings_count],
-            ["Compliance Score", f"{scan.compliance_score}%" if scan.compliance_score else "N/A"],
+            ["Compliance Score", f"{scan.overall_score}%" if scan.overall_score else "N/A"],
         ]
 
         for row, (label, value) in enumerate(details, 3):

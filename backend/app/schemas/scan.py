@@ -8,6 +8,7 @@ import uuid
 from pydantic import BaseModel, Field
 
 from app.models.scan import ScanStatus, ScanType
+from app.schemas.finding import FindingsByPage
 
 
 class ScanCreate(BaseModel):
@@ -73,4 +74,5 @@ class ScanDetailResponse(ScanResponse):
     """Detailed scan response with findings summary."""
     findings_by_section: Optional[Dict[str, int]] = None
     findings_by_type: Optional[Dict[str, int]] = None
+    findings_by_page: Optional[List[FindingsByPage]] = None
     compliance_breakdown: Optional[Dict[str, Dict]] = None

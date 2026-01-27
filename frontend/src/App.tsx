@@ -10,9 +10,7 @@ import Schedules from './pages/Schedules'
 import Reports from './pages/Reports'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  // TODO: Restore auth check for production
-  // const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
-  const isAuthenticated = true // Demo mode - bypass auth
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />

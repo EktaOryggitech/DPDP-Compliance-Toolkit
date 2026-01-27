@@ -1,6 +1,6 @@
 version: '3.8'
 
-# Minimal Docker Compose - Backend + PostgreSQL only
+# Docker Compose - Backend + PostgreSQL + Redis + Celery
 # Run with: docker-compose -f docker-compose.minimal.yml up --build
 
 services:
@@ -23,6 +23,18 @@ services:
       timeout: 5s
       retries: 10
 
+  # Redis for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: dpdp_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # Backend API
   backend:
     build:
@@ -31,7 +43,9 @@ services:
     container_name: dpdp_backend
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/dpdp_scanner
-      - REDIS_URL=redis://localhost:6379/0
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - SECRET_KEY=dev-secret-key-change-in-production
       - DEBUG=true
       - CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://localhost:5173
@@ -39,6 +53,8 @@ services:
       - "8000:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ../backend:/app
@@ -48,11 +64,30 @@ services:
         sleep 5 &&
         echo 'Running migrations...' &&
         alembic upgrade head || echo 'Migrations skipped' &&
-        echo 'Seeding demo data...' &&
-        python -m app.scripts.seed_demo_data || echo 'Seeding skipped' &&
         echo 'Starting server...' &&
         uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
       "
+
+  # Celery Worker for background tasks
+  celery:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.minimal
+    container_name: dpdp_celery
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/dpdp_scanner
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - SECRET_KEY=dev-secret-key-change-in-production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q celery,scans,reports,schedules
 
 volumes:
   postgres_data:

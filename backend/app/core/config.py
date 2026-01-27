@@ -29,9 +29,13 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8 hours - token lifetime
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days for refresh token
     ALGORITHM: str = "HS256"
+
+    # Session Inactivity Settings
+    SESSION_INACTIVITY_TIMEOUT_MINUTES: int = 5  # Logout after 5 min of inactivity
+    HEARTBEAT_INTERVAL_SECONDS: int = 30  # Frontend sends heartbeat every 30 sec
 
     # CORS - accepts comma-separated string or list
     CORS_ORIGINS: Union[List[str], str] = ["http://localhost:3000", "http://localhost:5173"]

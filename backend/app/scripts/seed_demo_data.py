@@ -7,7 +7,7 @@ Run with: python -m app.scripts.seed_demo_data
 import asyncio
 import uuid
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
+import bcrypt
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -21,8 +21,12 @@ from app.models.application import Application, ApplicationType
 from app.models.scan import Scan, ScanStatus, ScanType
 from app.models.finding import Finding, FindingSeverity, FindingStatus, CheckType
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    """Hash password with bcrypt, truncating to 72 bytes for compatibility."""
+    password_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password_bytes, salt).decode('utf-8')
 
 
 async def seed_database():
@@ -64,9 +68,10 @@ async def seed_database():
         # ============
         admin_user = User(
             id=uuid.uuid4(),
+            username="admin",
             email="admin@nic.in",
             name="System Administrator",
-            password_hash=pwd_context.hash("admin123"),
+            password_hash=hash_password("admin123"),
             role=UserRole.ADMIN,
             organization_id=org.id,
             is_active=True,
@@ -76,16 +81,17 @@ async def seed_database():
 
         auditor_user = User(
             id=uuid.uuid4(),
+            username="auditor",
             email="auditor@nic.in",
             name="DPDP Compliance Auditor",
-            password_hash=pwd_context.hash("auditor123"),
+            password_hash=hash_password("auditor123"),
             role=UserRole.AUDITOR,
             organization_id=org.id,
             is_active=True,
             is_verified=True,
         )
         session.add(auditor_user)
-        print(f"  Created users: admin@nic.in, auditor@nic.in")
+        print(f"  Created users: admin, auditor")
 
         # ===================
         # Create Applications
@@ -423,10 +429,10 @@ async def seed_database():
 
         # Commit all changes
         await session.commit()
-        print("\n✓ Demo data seeded successfully!")
+        print("\n[OK] Demo data seeded successfully!")
         print("\nDemo Credentials:")
-        print("  Admin:   admin@nic.in / admin123")
-        print("  Auditor: auditor@nic.in / auditor123")
+        print("  Admin:   admin / admin123")
+        print("  Auditor: auditor / auditor123")
 
 
 if __name__ == "__main__":

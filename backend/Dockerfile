@@ -8,7 +8,8 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,12 +31,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrandr2 \
     libgbm1 \
     libasound2 \
+    # Playwright font dependencies (modern Debian package names)
+    fonts-unifont \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    fonts-freefont-ttf \
     # For Tesseract OCR
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-hin \
     # For OpenCV
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,9 +52,10 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install chromium && \
-    playwright install-deps chromium
+# Install Playwright browsers in shared location
+RUN mkdir -p /opt/playwright && \
+    playwright install chromium && \
+    chmod -R 755 /opt/playwright
 
 # Download spaCy models
 RUN python -m spacy download en_core_web_sm && \

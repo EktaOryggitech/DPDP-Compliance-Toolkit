@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.core.websocket import ScanProgressReporter
 from app.models.application import Application, ApplicationType
 from app.models.scan import Scan, ScanStatus, ScanType
-from app.models.finding import Finding, FindingSeverity, CheckType
+from app.models.finding import Finding, FindingSeverity, FindingStatus, CheckType
 from app.workers.celery_app import celery_app
 
 
@@ -57,6 +57,83 @@ def run_web_scan(self, scan_id: str, application_id: str):
     )
 
 
+def get_scan_type_config(scan_type: ScanType) -> dict:
+    """
+    Get configuration based on scan type.
+
+    QUICK: Fast scan (~2-5 min), basic compliance checks
+    STANDARD: Balanced scan (~5-15 min), all DPDP sections
+    DEEP: Comprehensive scan (~15-60 min), full analysis with NLP
+    """
+    configs = {
+        ScanType.QUICK: {
+            "max_pages": 20,
+            "timeout_seconds": 300,
+            "capture_screenshots": False,
+            "detectors": ["privacy_notice", "consent", "dark_patterns"],
+            "enable_nlp": False,
+            "description": "Quick compliance check - Privacy Notice, Consent, Dark Patterns",
+        },
+        ScanType.STANDARD: {
+            "max_pages": 50,
+            "timeout_seconds": 900,
+            "capture_screenshots": True,
+            "detectors": ["all"],
+            "enable_nlp": False,
+            "description": "Standard compliance audit - All DPDP Sections",
+        },
+        ScanType.DEEP: {
+            "max_pages": 200,
+            "timeout_seconds": 3600,
+            "capture_screenshots": True,
+            "detectors": ["all"],
+            "enable_nlp": True,
+            "description": "Deep compliance audit - Full analysis with NLP",
+        },
+    }
+    return configs.get(scan_type, configs[ScanType.STANDARD])
+
+
+def get_detectors_for_scan_type(scan_type: ScanType):
+    """
+    Get the appropriate detectors based on scan type.
+
+    Quick Scan: Essential detectors for basic compliance
+    Standard Scan: All DPDP section detectors
+    Deep Scan: All detectors with enhanced analysis
+    """
+    from app.detectors import (
+        PrivacyNoticeDetector,
+        ConsentDetector,
+        DarkPatternDetector,
+        ChildrenDataDetector,
+        DataPrincipalRightsDetector,
+        DataRetentionDetector,
+        DataBreachNotificationDetector,
+        SignificantDataFiduciaryDetector,
+    )
+
+    if scan_type == ScanType.QUICK:
+        # Quick scan: Essential compliance checks
+        return [
+            PrivacyNoticeDetector(),      # Section 5 - Privacy Notice
+            ConsentDetector(),            # Section 6 - Consent (includes withdrawal 6(6))
+            DarkPatternDetector(),        # Section 18 - Dark Patterns
+        ]
+
+    # Standard and Deep scans: All DPDP sections
+    return [
+        PrivacyNoticeDetector(),      # Section 5 - Privacy Notice
+        ConsentDetector(),            # Section 6 - Consent (includes withdrawal 6(6))
+        DataRetentionDetector(),      # Section 8 - Data Retention
+        ChildrenDataDetector(),       # Section 9 - Children's Data
+        SignificantDataFiduciaryDetector(),  # Section 10 - SDF obligations
+        DataPrincipalRightsDetector(),       # Sections 11-14 (includes grievance Section 13)
+        DataBreachNotificationDetector(),    # Section 8(6) - Breach Notification
+        DarkPatternDetector(),               # Section 18 - Dark Patterns
+    ]
+
+
 async def _run_web_scan_async(task, scan_id: str, application_id: str):
     """Async implementation of web scan with real-time WebSocket progress."""
     reporter = None
@@ -80,39 +157,64 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             scan.started_at = datetime.utcnow()
             await db.commit()
 
+            # Get scan type configuration
+            scan_type_config = get_scan_type_config(scan.scan_type)
+
             # Phase 1: Initialization (0-10%)
             update_task_progress(0, 100, "Initializing scanner...")
-            await reporter.update(step=0, message="Initializing web scanner...")
+            await reporter.update(
+                step=0,
+                message=f"Initializing {scan.scan_type.value.upper()} scan: {scan_type_config['description']}"
+            )
 
             # Import scanner components
             from app.scanners.web.crawler import WebCrawler
-            from app.scanners.web.dom_extractor import DOMExtractor
             from app.evidence.screenshot import ScreenshotCapture
-            from app.detectors import (
-                PrivacyNoticeDetector,
-                ConsentDetector,
-                DarkPatternDetector,
-                ChildrenDataDetector,
-                DataPrincipalRightsDetector,
-                DataRetentionDetector,
-                DataBreachNotificationDetector,
-                SignificantDataFiduciaryDetector,
-            )
 
             await reporter.update(step=5, message="Scanner initialized, starting crawl...")
 
             # Phase 2: Crawling (10-40%)
-            max_pages = scan.scan_config.get("max_pages", 50) if scan.scan_config else 50
+            # Use config_overrides if provided, otherwise use scan_type defaults
+            max_pages = scan_type_config["max_pages"]
+            if scan.scan_config:
+                max_pages = scan.scan_config.get("max_pages", max_pages)
+
+            # Handle localhost URLs for Docker environment
+            scan_url = application.url
+            if scan_url:
+                # Convert localhost to host.docker.internal for Docker access
+                scan_url = scan_url.replace("localhost", "host.docker.internal")
+                scan_url = scan_url.replace("127.0.0.1", "host.docker.internal")
+
+            # Debug logging for scan configuration
+            print(f"[SCAN DEBUG] Original URL: {application.url}")
+            print(f"[SCAN DEBUG] Docker URL: {scan_url}")
+            print(f"[SCAN DEBUG] Max pages: {max_pages}")
+            print(f"[SCAN DEBUG] Scan type: {scan.scan_type}")
+            print(f"[SCAN DEBUG] Auth config present: {bool(application.auth_config)}")
+            if application.auth_config:
+                print(f"[SCAN DEBUG] Auth type: {application.auth_config.get('auth_type') or application.auth_config.get('type', 'none')}")
+                print(f"[SCAN DEBUG] Login URL: {application.auth_config.get('login_url', 'not set')}")
+                credentials = application.auth_config.get('credentials', {})
+                print(f"[SCAN DEBUG] Username configured: {bool(credentials.get('username') or application.auth_config.get('username'))}")
+
             crawler = WebCrawler(
-                start_url=application.url,
+                base_url=scan_url,
                 max_pages=max_pages,
-                allowed_domains=[application.url.split("//")[1].split("/")[0]] if application.url else None,
+                auth_config=application.auth_config,
             )
 
-            await reporter.update(step=10, message=f"Crawling website: {application.url}")
+            await reporter.update(step=10, message=f"Crawling website: {application.url} (max {max_pages} pages)")
 
             pages = await crawler.crawl()
             total_pages = len(pages)
+
+            # Debug logging for crawl results
+            print(f"[SCAN DEBUG] Crawl complete - Total pages found: {total_pages}")
+            for i, pg in enumerate(pages[:10]):  # Log first 10 pages
+                print(f"[SCAN DEBUG] Page {i+1}: {pg.url} - Title: {pg.title[:50] if pg.title else 'No title'}")
+            if total_pages > 10:
+                print(f"[SCAN DEBUG] ... and {total_pages - 10} more pages")
 
             await reporter.update(
                 step=40,
@@ -121,20 +223,10 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             )
 
             # Phase 3: Scanning pages (40-90%)
-            screenshot_capture = ScreenshotCapture()
-            dom_extractor = DOMExtractor()
+            screenshot_capture = ScreenshotCapture() if scan_type_config["capture_screenshots"] else None
 
-            # Initialize detectors based on DPDP sections
-            detectors = [
-                PrivacyNoticeDetector(),      # Section 5
-                ConsentDetector(),            # Section 6
-                DataRetentionDetector(),      # Section 8
-                ChildrenDataDetector(),       # Section 9
-                SignificantDataFiduciaryDetector(),  # Section 10
-                DataPrincipalRightsDetector(),       # Sections 11-14
-                DataBreachNotificationDetector(),    # Section 8(6)
-                DarkPatternDetector(),               # Dark Patterns
-            ]
+            # Initialize detectors based on scan type
+            detectors = get_detectors_for_scan_type(scan.scan_type)
 
             all_findings: List[Finding] = []
             findings_count = 0
@@ -161,13 +253,14 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                                 scan_id=uuid.UUID(scan_id),
                                 check_type=finding_data.check_type,
                                 severity=finding_data.severity,
+                                status=finding_data.status,
                                 title=finding_data.title,
                                 description=finding_data.description,
                                 dpdp_section=finding_data.dpdp_section,
-                                recommendation=finding_data.recommendation,
-                                url=current_url,
-                                element_selector=finding_data.element_selector,
-                                evidence_html=finding_data.evidence_html,
+                                remediation=finding_data.remediation,
+                                location=current_url,
+                                element_selector=getattr(finding_data, 'element_selector', None),
+                                extra_data=getattr(finding_data, 'extra_data', None),
                             )
                             db.add(finding)
                             all_findings.append(finding)
@@ -190,6 +283,10 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                 scan.pages_scanned = pages_scanned
                 scan.findings_count = findings_count
 
+                # Commit after each page so progress is visible in the frontend
+                await db.commit()
+
+            # Final commit (in case there were no pages)
             await db.commit()
 
             # Phase 4: Finalizing (90-100%)
@@ -307,25 +404,21 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
             scan.started_at = datetime.utcnow()
             await db.commit()
 
+            # Get scan type configuration
+            scan_type_config = get_scan_type_config(scan.scan_type)
+
             # Phase 1: Initialization (0-10%)
             update_task_progress(0, 100, "Launching Windows application...")
-            await reporter.update(step=0, message="Initializing Windows scanner...")
+            await reporter.update(
+                step=0,
+                message=f"Initializing {scan.scan_type.value.upper()} scan: {scan_type_config['description']}"
+            )
 
             # Import scanner components
             from app.scanners.windows.controller import WindowsController
             from app.scanners.windows.vision import WindowsVisionAnalyzer
             from app.scanners.windows.ocr_processor import OCRProcessor
             from app.evidence.screenshot import ScreenshotCapture
-            from app.detectors import (
-                PrivacyNoticeDetector,
-                ConsentDetector,
-                DarkPatternDetector,
-                ChildrenDataDetector,
-                DataPrincipalRightsDetector,
-                DataRetentionDetector,
-                DataBreachNotificationDetector,
-                SignificantDataFiduciaryDetector,
-            )
 
             await reporter.update(step=5, message="Scanner initialized...")
 
@@ -398,17 +491,8 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
                         screenshot_path=screenshot.file_path,
                     )
 
-                    # Initialize detectors for Windows context
-                    detectors = [
-                        PrivacyNoticeDetector(),
-                        ConsentDetector(),
-                        DataRetentionDetector(),
-                        ChildrenDataDetector(),
-                        SignificantDataFiduciaryDetector(),
-                        DataPrincipalRightsDetector(),
-                        DataBreachNotificationDetector(),
-                        DarkPatternDetector(),
-                    ]
+                    # Initialize detectors based on scan type
+                    detectors = get_detectors_for_scan_type(scan.scan_type)
 
                     # Run detectors
                     for detector in detectors:
@@ -420,13 +504,14 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
                                     scan_id=uuid.UUID(scan_id),
                                     check_type=finding_data.check_type,
                                     severity=finding_data.severity,
+                                    status=finding_data.status,
                                     title=finding_data.title,
                                     description=finding_data.description,
                                     dpdp_section=finding_data.dpdp_section,
-                                    recommendation=finding_data.recommendation,
-                                    url=f"windows://{window_title}",
-                                    element_selector=finding_data.element_selector,
-                                    screenshot_path=screenshot.file_path,
+                                    remediation=finding_data.remediation,
+                                    location=f"windows://{window_title}",
+                                    element_selector=getattr(finding_data, 'element_selector', None),
+                                    extra_data=getattr(finding_data, 'extra_data', None),
                                 )
                                 db.add(finding)
                                 all_findings.append(finding)
@@ -448,14 +533,14 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
                         for dp in vision_result.dark_patterns:
                             finding = Finding(
                                 scan_id=uuid.UUID(scan_id),
-                                check_type=CheckType.DARK_PATTERN,
+                                check_type=CheckType.DARK_PATTERN_MISDIRECTION,
                                 severity=FindingSeverity.HIGH,
+                                status=FindingStatus.FAIL,
                                 title=f"Dark Pattern Detected: {dp.get('type', 'Unknown')}",
                                 description=dp.get('description', 'Dark pattern identified in UI'),
                                 dpdp_section="Dark Patterns",
-                                recommendation="Remove or modify the dark pattern to ensure transparent user experience",
-                                url=f"windows://{window_title}",
-                                screenshot_path=screenshot.file_path,
+                                remediation="Remove or modify the dark pattern to ensure transparent user experience",
+                                location=f"windows://{window_title}",
                             )
                             db.add(finding)
                             all_findings.append(finding)
