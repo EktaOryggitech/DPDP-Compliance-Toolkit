@@ -8,7 +8,7 @@ import re
 from typing import List, Dict, Any
 from bs4 import BeautifulSoup
 
-from app.detectors.base import BaseDetector
+from app.detectors.base import BaseDetector, generate_css_selector
 from app.models.finding import CheckType, Finding, FindingSeverity, FindingStatus
 from app.scanners.web.crawler import CrawledPage
 
@@ -169,6 +169,12 @@ class ChildrenDataDetector(BaseDetector):
         has_age_inputs = len(age_inputs) > 0 or len(age_selects) > 0
 
         if not has_age_verification and not has_age_inputs:
+            # Find an element to highlight (form or main content area)
+            form = soup.find("form")
+            main_content = soup.find("main") or soup.find("div", class_=lambda x: x and "content" in str(x).lower()) or soup.find("body")
+            element_for_screenshot = form or main_content
+            element_selector = generate_css_selector(element_for_screenshot) if element_for_screenshot else "body"
+
             # Visual representation for children's data flow
             visual_content = [
                 "CHILDREN'S DATA COMPLIANCE CHECK",
@@ -237,6 +243,7 @@ function verifyAge() {
                 title="No age verification mechanism found",
                 description="This appears to be a children-targeted site but lacks age verification. DPDP Section 9 requires verification before processing children's data.",
                 location=page.url,
+                element_selector=element_selector,
                 dpdp_section=self.dpdp_section,
                 remediation="Implement a robust age verification mechanism (age gate, date of birth input) before collecting any personal data.",
                 extra_data={
@@ -294,6 +301,10 @@ function verifyAge() {
             has_forms = len(soup.find_all("form")) > 0
 
             if has_forms:
+                # Find form element for screenshot
+                form = soup.find("form")
+                form_selector = generate_css_selector(form) if form else "body"
+
                 # Visual representation
                 visual_content = [
                     "PARENTAL CONSENT COMPLIANCE CHECK",
@@ -355,6 +366,7 @@ function verifyAge() {
                     title="No parental consent mechanism found",
                     description="Children-targeted site collects data but lacks verifiable parental consent mechanism. DPDP Section 9 requires parental/guardian consent for processing children's data.",
                     location=page.url,
+                    element_selector=form_selector,
                     dpdp_section=self.dpdp_section,
                     remediation="Implement verifiable parental consent: parent email verification, signed consent form, or other approved methods.",
                     extra_data={
@@ -443,6 +455,27 @@ function verifyAge() {
             ])
             visual_box = generate_visual_box("TRACKING ON CHILDREN'S SITE", visual_content)
 
+            # Find the first tracking script element for screenshot
+            element_selector = None
+            if tracking_scripts and scripts:
+                for script in scripts:
+                    src = script.get("src", "").lower()
+                    for domain in tracking_domains:
+                        if domain in src:
+                            element_selector = generate_css_selector(script)
+                            break
+                    if element_selector:
+                        break
+
+            # If no script found, try to find any script tag or body
+            if not element_selector:
+                first_script = soup.find("script", src=True)
+                if first_script:
+                    element_selector = generate_css_selector(first_script)
+                else:
+                    # Use body as fallback for viewport screenshot
+                    element_selector = "body"
+
             findings.append(Finding(
                 check_type=CheckType.OTHER,
                 severity=FindingSeverity.CRITICAL,
@@ -450,6 +483,7 @@ function verifyAge() {
                 title="Tracking/behavioral advertising detected on children's site",
                 description=f"DPDP Section 9 prohibits tracking, behavioral monitoring, and targeted advertising for children. Found: {', '.join(all_tracking)[:200]}",
                 location=page.url,
+                element_selector=element_selector,
                 dpdp_section=self.dpdp_section,
                 remediation="Remove all tracking, analytics, and behavioral advertising from children-targeted sections. Only essential cookies should be used.",
                 extra_data={
@@ -486,6 +520,12 @@ function verifyAge() {
         cookie_text = text_content
         if "third party" in cookie_text and "cookie" in cookie_text:
             if not any(term in cookie_text for term in ["except children", "not for children", "disable for minors"]):
+                # Find element containing cookie text for screenshot
+                cookie_element = soup.find(string=lambda t: t and "third party" in t.lower() and "cookie" in t.lower())
+                cookie_selector = "body"
+                if cookie_element and cookie_element.parent:
+                    cookie_selector = generate_css_selector(cookie_element.parent)
+
                 visual_content = [
                     "THIRD-PARTY DATA SHARING ON CHILDREN'S SITE",
                     "",
@@ -508,6 +548,7 @@ function verifyAge() {
                     title="Third-party data sharing on children's site",
                     description="Third-party cookies/data sharing detected without explicit exemption for children's data.",
                     location=page.url,
+                    element_selector=cookie_selector,
                     dpdp_section=self.dpdp_section,
                     remediation="Disable third-party data sharing for users identified as children. Implement age-gated cookie consent.",
                     extra_data={
@@ -604,7 +645,7 @@ with advertising networks for users under 18.</p>''',
                         title="Age collection without children's data handling notice",
                         description="Form collects age/date of birth but doesn't explain how children's data will be handled differently.",
                         location=page.url,
-                        element_selector=str(form)[:500],
+                        element_selector=generate_css_selector(form),
                         dpdp_section=self.dpdp_section,
                         remediation="Add clear notice about how data will be handled if user is under 18, including parental consent requirements.",
                         extra_data={

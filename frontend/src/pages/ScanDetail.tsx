@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { scansApi, findingsApi, reportsApi } from '../lib/api'
 import {
@@ -10,24 +10,105 @@ import {
   DocumentArrowDownIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  ChevronLeftIcon,
   GlobeAltIcon,
   CodeBracketIcon,
   WrenchScrewdriverIcon,
   CurrencyRupeeIcon,
   BookOpenIcon,
+  ArrowLeftIcon,
+  PhotoIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline'
 import toast from 'react-hot-toast'
+
+// Screenshot lightbox modal - uses direct image URL
+function ScreenshotModal({ url, onClose }: { url: string; onClose: () => void }) {
+  const [imageError, setImageError] = useState(false)
+  const [imageLoading, setImageLoading] = useState(true)
+
+  // Build the full image URL
+  const getImageUrl = () => {
+    // If it's already a full URL, use it
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url
+    }
+    // If it's a relative URL, prepend the API base
+    if (url.startsWith('/api/v1')) {
+      return `http://localhost:8000${url}`
+    }
+    if (url.startsWith('/')) {
+      return `http://localhost:8000/api/v1${url}`
+    }
+    return `http://localhost:8000/api/v1/${url}`
+  }
+
+  const imageUrl = getImageUrl()
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75"
+      onClick={onClose}
+    >
+      <div className="relative max-w-6xl max-h-[90vh] overflow-auto">
+        <button
+          onClick={onClose}
+          className="absolute top-2 right-2 p-2 bg-white rounded-full shadow-lg hover:bg-gray-100 z-10"
+        >
+          <XMarkIcon className="h-6 w-6 text-gray-700" />
+        </button>
+        {imageLoading && !imageError && (
+          <div className="flex items-center justify-center p-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white"></div>
+          </div>
+        )}
+        {imageError ? (
+          <div className="bg-white p-8 rounded-lg text-center">
+            <p className="text-red-600 font-medium">Failed to load screenshot</p>
+            <p className="text-gray-500 text-sm mt-2 break-all">URL: {imageUrl}</p>
+            <button
+              onClick={onClose}
+              className="mt-4 px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+            >
+              Close
+            </button>
+          </div>
+        ) : (
+          <img
+            src={imageUrl}
+            alt="Violation Screenshot"
+            className={`max-w-full h-auto rounded-lg shadow-2xl ${imageLoading ? 'hidden' : ''}`}
+            onClick={(e) => e.stopPropagation()}
+            onLoad={() => setImageLoading(false)}
+            onError={() => {
+              setImageError(true)
+              setImageLoading(false)
+            }}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
 
 // Component to display detailed finding information
 function FindingDetail({ finding }: { finding: any }) {
   const [showDetails, setShowDetails] = useState(false)
+  const [showScreenshot, setShowScreenshot] = useState(false)
   const extra = finding.extra_data || {}
 
   const hasExtraData = extra.code_before || extra.code_after || extra.code_fix_example ||
                        extra.fix_steps || extra.penalty_risk || extra.visual_representation || extra.dpdp_reference
 
+  const hasScreenshot = finding.screenshot_url || finding.screenshot_path
+
   return (
     <div className="mt-3">
+      {/* Screenshot Modal */}
+      {showScreenshot && finding.screenshot_url && (
+        <ScreenshotModal url={finding.screenshot_url} onClose={() => setShowScreenshot(false)} />
+      )}
+
       {/* Quick info row */}
       <div className="flex flex-wrap gap-2 mb-2">
         {extra.penalty_risk && (
@@ -41,6 +122,15 @@ function FindingDetail({ finding }: { finding: any }) {
             <BookOpenIcon className="h-3 w-3 mr-1" />
             {finding.dpdp_section}
           </span>
+        )}
+        {hasScreenshot && (
+          <button
+            onClick={() => setShowScreenshot(true)}
+            className="inline-flex items-center px-2 py-1 rounded text-xs bg-blue-100 text-blue-700 hover:bg-blue-200"
+          >
+            <PhotoIcon className="h-3 w-3 mr-1" />
+            View Screenshot
+          </button>
         )}
       </div>
 
@@ -202,10 +292,152 @@ const severityConfig = {
 
 type ViewMode = 'section' | 'page'
 
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100]
+const DEFAULT_PAGE_SIZE = 5
+
+// Pagination options for DPDP sections (main section list)
+const SECTION_PAGE_SIZE_OPTIONS = [2, 5, 10]
+const DEFAULT_SECTION_PAGE_SIZE = 2
+
+// Pagination options for findings within each DPDP section
+const SECTION_FINDING_PAGE_SIZE_OPTIONS = [1, 2, 3, 5]
+const DEFAULT_SECTION_FINDING_PAGE_SIZE = 1
+
+// Component to display findings within a section with pagination
+function SectionFindings({ sectionData }: { sectionData: any }) {
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_SECTION_FINDING_PAGE_SIZE)
+
+  const findings = sectionData.findings || []
+  const totalPages = Math.ceil(findings.length / pageSize)
+  const startIndex = (currentPage - 1) * pageSize
+  const endIndex = startIndex + pageSize
+  const paginatedFindings = findings.slice(startIndex, endIndex)
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize)
+    setCurrentPage(1)
+  }
+
+  return (
+    <div key={sectionData.section} className="border border-gray-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+        <h3 className="text-md font-medium text-gray-900">
+          {sectionData.section_name || sectionData.section} ({findings.length} finding{findings.length !== 1 ? 's' : ''})
+        </h3>
+      </div>
+      <div className="p-4 space-y-3">
+        {paginatedFindings.map((finding: any) => {
+          const config =
+            severityConfig[
+              finding.severity as keyof typeof severityConfig
+            ] || severityConfig.low
+          const Icon = config.icon
+
+          return (
+            <div
+              key={finding.id}
+              className={`p-4 rounded-lg border ${config.border} ${config.bg}`}
+            >
+              <div className="flex items-start">
+                <Icon
+                  className={`h-5 w-5 ${config.color} mt-0.5 flex-shrink-0`}
+                  aria-hidden="true"
+                />
+                <div className="ml-3 flex-1">
+                  <div className="flex items-start justify-between">
+                    <h4 className="text-sm font-medium text-gray-900">
+                      {finding.title}
+                    </h4>
+                    <span
+                      className={`ml-4 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${config.bg} ${config.color} flex-shrink-0`}
+                    >
+                      {finding.severity}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-600">
+                    {finding.description}
+                  </p>
+                  {finding.location && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      Found on: {finding.location}
+                    </p>
+                  )}
+                  {/* Detailed Finding Information */}
+                  <FindingDetail finding={finding} />
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {/* Section Findings Pagination Footer */}
+      {findings.length > 1 && (
+        <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Show</span>
+              <select
+                value={pageSize}
+                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                className="border border-gray-300 rounded-md text-xs py-1 px-2 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                {SECTION_FINDING_PAGE_SIZE_OPTIONS.map(size => (
+                  <option key={size} value={size}>{size}</option>
+                ))}
+              </select>
+              <span className="text-xs text-gray-500">per page</span>
+            </div>
+            <div className="text-xs text-gray-600">
+              Showing {startIndex + 1} to {Math.min(endIndex, findings.length)} of {findings.length}
+            </div>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-xs"
+              >
+                Prev
+              </button>
+              <span className="text-xs text-gray-600">
+                {currentPage} / {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-2 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-xs"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function ScanDetail() {
   const { scanId } = useParams<{ scanId: string }>()
+  const navigate = useNavigate()
   const [viewMode, setViewMode] = useState<ViewMode>('page')
   const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set())
+  const [currentPage, setCurrentPage] = useState(1)
+  const [currentSectionPage, setCurrentSectionPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [sectionPageSize, setSectionPageSize] = useState(DEFAULT_SECTION_PAGE_SIZE)
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize)
+    setCurrentPage(1)
+  }
+
+  const handleSectionPageSizeChange = (newSize: number) => {
+    setSectionPageSize(newSize)
+    setCurrentSectionPage(1)
+  }
 
   const { data: scan, isLoading: scanLoading } = useQuery({
     queryKey: ['scan', scanId],
@@ -289,14 +521,23 @@ export default function ScanDetail() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex justify-between items-start">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            Scan: {scan.application_name}
-          </h1>
-          <p className="mt-1 text-sm text-gray-500">
-            {scan.scan_type} scan started on{' '}
-            {new Date(scan.created_at).toLocaleString()}
-          </p>
+        <div className="flex items-start gap-4">
+          <button
+            onClick={() => navigate('/scans')}
+            className="mt-1 p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors"
+            title="Back to Scans"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+          </button>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">
+              Scan: {scan.application_name}
+            </h1>
+            <p className="mt-1 text-sm text-gray-500">
+              {scan.scan_type} scan started on{' '}
+              {new Date(scan.created_at).toLocaleString()}
+            </p>
+          </div>
         </div>
         <div className="flex space-x-3">
           <button
@@ -336,6 +577,9 @@ export default function ScanDetail() {
               >
                 {scan.status}
               </span>
+              {scan.status === 'failed' && scan.status_message && (
+                <p className="mt-2 text-sm text-red-600">{scan.status_message}</p>
+              )}
             </dd>
           </div>
           <div>
@@ -373,7 +617,7 @@ export default function ScanDetail() {
           <div className="flex justify-between items-center">
             <div className="flex space-x-4">
               <button
-                onClick={() => setViewMode('page')}
+                onClick={() => { setViewMode('page'); setCurrentPage(1); setCurrentSectionPage(1); }}
                 className={`px-4 py-2 text-sm font-medium rounded-md ${
                   viewMode === 'page'
                     ? 'bg-indigo-100 text-indigo-700'
@@ -384,7 +628,7 @@ export default function ScanDetail() {
                 By Page/Navigation
               </button>
               <button
-                onClick={() => setViewMode('section')}
+                onClick={() => { setViewMode('section'); setCurrentPage(1); setCurrentSectionPage(1); }}
                 className={`px-4 py-2 text-sm font-medium rounded-md ${
                   viewMode === 'section'
                     ? 'bg-indigo-100 text-indigo-700'
@@ -419,7 +663,16 @@ export default function ScanDetail() {
             <>
               {scan?.findings_by_page && scan.findings_by_page.length > 0 ? (
                 <div className="space-y-4">
-                  {scan.findings_by_page.map((pageData: any) => {
+                  {(() => {
+                    const totalPages = Math.ceil(scan.findings_by_page.length / pageSize)
+                    const startIndex = (currentPage - 1) * pageSize
+                    const endIndex = startIndex + pageSize
+                    const paginatedPages = scan.findings_by_page.slice(startIndex, endIndex)
+
+                    return (
+                      <>
+                        {/* Page List */}
+                        {paginatedPages.map((pageData: any) => {
                     const isExpanded = expandedPages.has(pageData.page_url)
                     return (
                       <div
@@ -474,7 +727,11 @@ export default function ScanDetail() {
                         {/* Findings List - Expandable */}
                         {isExpanded && (
                           <div className="p-4 space-y-3 bg-white">
-                            {pageData.findings.map((finding: any) => {
+                            {/* Sort findings by severity: critical > high > medium > low > info */}
+                            {[...pageData.findings].sort((a: any, b: any) => {
+                              const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+                              return (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5)
+                            }).map((finding: any) => {
                               const config =
                                 severityConfig[
                                   finding.severity as keyof typeof severityConfig
@@ -517,8 +774,54 @@ export default function ScanDetail() {
                           </div>
                         )}
                       </div>
+                        )
+                      })}
+
+                        {/* Bottom Pagination Footer */}
+                        <div className="mt-6 pt-4 border-t border-gray-200 flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-500">Show</span>
+                              <select
+                                value={pageSize}
+                                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                                className="border border-gray-300 rounded-md text-sm py-1 px-2 focus:ring-indigo-500 focus:border-indigo-500"
+                              >
+                                {PAGE_SIZE_OPTIONS.map(size => (
+                                  <option key={size} value={size}>{size}</option>
+                                ))}
+                              </select>
+                              <span className="text-sm text-gray-500">per page</span>
+                            </div>
+                            <div className="text-sm text-gray-600">
+                              Showing {startIndex + 1} to {Math.min(endIndex, scan.findings_by_page.length)} of {scan.findings_by_page.length} pages
+                            </div>
+                          </div>
+                          {totalPages > 1 && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                disabled={currentPage === 1}
+                                className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                Prev
+                              </button>
+                              <span className="text-sm text-gray-600">
+                                Page {currentPage} of {totalPages}
+                              </span>
+                              <button
+                                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                disabled={currentPage === totalPages}
+                                className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )
-                  })}
+                  })()}
                 </div>
               ) : (
                 <div className="text-center text-gray-500">No findings yet</div>
@@ -533,59 +836,64 @@ export default function ScanDetail() {
                 <div className="text-center text-gray-500">Loading findings...</div>
               ) : groupedFindings && Array.isArray(groupedFindings) && groupedFindings.length > 0 ? (
                 <div className="space-y-6">
-                  {groupedFindings.map((sectionData: any) => (
-                      <div key={sectionData.section}>
-                        <h3 className="text-md font-medium text-gray-900 mb-3">
-                          {sectionData.section_name || sectionData.section} ({sectionData.findings?.length || 0} findings)
-                        </h3>
-                        <div className="space-y-3">
-                          {sectionData.findings?.map((finding: any) => {
-                            const config =
-                              severityConfig[
-                                finding.severity as keyof typeof severityConfig
-                              ] || severityConfig.low
-                            const Icon = config.icon
+                  {(() => {
+                    const totalSectionPages = Math.ceil(groupedFindings.length / sectionPageSize)
+                    const startIndex = (currentSectionPage - 1) * sectionPageSize
+                    const endIndex = startIndex + sectionPageSize
+                    const paginatedSections = groupedFindings.slice(startIndex, endIndex)
 
-                            return (
-                              <div
-                                key={finding.id}
-                                className={`p-4 rounded-lg border ${config.border} ${config.bg}`}
+                    return (
+                      <>
+                        {/* Section List */}
+                        {paginatedSections.map((sectionData: any) => (
+                          <SectionFindings key={sectionData.section} sectionData={sectionData} />
+                        ))}
+
+                        {/* Bottom Pagination Footer */}
+                        <div className="mt-6 pt-4 border-t border-gray-200 flex items-center justify-between">
+                          <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-500">Show</span>
+                              <select
+                                value={sectionPageSize}
+                                onChange={(e) => handleSectionPageSizeChange(Number(e.target.value))}
+                                className="border border-gray-300 rounded-md text-sm py-1 px-2 focus:ring-indigo-500 focus:border-indigo-500"
                               >
-                                <div className="flex items-start">
-                                  <Icon
-                                    className={`h-5 w-5 ${config.color} mt-0.5 flex-shrink-0`}
-                                    aria-hidden="true"
-                                  />
-                                  <div className="ml-3 flex-1">
-                                    <div className="flex items-start justify-between">
-                                      <h4 className="text-sm font-medium text-gray-900">
-                                        {finding.title}
-                                      </h4>
-                                      <span
-                                        className={`ml-4 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${config.bg} ${config.color} flex-shrink-0`}
-                                      >
-                                        {finding.severity}
-                                      </span>
-                                    </div>
-                                    <p className="mt-1 text-sm text-gray-600">
-                                      {finding.description}
-                                    </p>
-                                    {finding.location && (
-                                      <p className="mt-1 text-xs text-gray-500">
-                                        Found on: {finding.location}
-                                      </p>
-                                    )}
-                                    {/* Detailed Finding Information */}
-                                    <FindingDetail finding={finding} />
-                                  </div>
-                                </div>
-                              </div>
-                            )
-                          })}
+                                {SECTION_PAGE_SIZE_OPTIONS.map(size => (
+                                  <option key={size} value={size}>{size}</option>
+                                ))}
+                              </select>
+                              <span className="text-sm text-gray-500">per page</span>
+                            </div>
+                            <div className="text-sm text-gray-600">
+                              Showing {startIndex + 1} to {Math.min(endIndex, groupedFindings.length)} of {groupedFindings.length} sections
+                            </div>
+                          </div>
+                          {totalSectionPages > 1 && (
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setCurrentSectionPage(p => Math.max(1, p - 1))}
+                                disabled={currentSectionPage === 1}
+                                className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                Prev
+                              </button>
+                              <span className="text-sm text-gray-600">
+                                Page {currentSectionPage} of {totalSectionPages}
+                              </span>
+                              <button
+                                onClick={() => setCurrentSectionPage(p => Math.min(totalSectionPages, p + 1))}
+                                disabled={currentSectionPage === totalSectionPages}
+                                className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      </div>
+                      </>
                     )
-                  )}
+                  })()}
                 </div>
               ) : (
                 <div className="text-center text-gray-500">No findings yet</div>

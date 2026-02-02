@@ -17,6 +17,7 @@ from app.core.websocket import ScanProgressReporter
 from app.models.application import Application, ApplicationType
 from app.models.scan import Scan, ScanStatus, ScanType
 from app.models.finding import Finding, FindingSeverity, FindingStatus, CheckType
+from app.models.scan_configuration import ScanConfiguration
 from app.workers.celery_app import celery_app
 
 
@@ -40,6 +41,20 @@ async def create_progress_reporter(scan_id: str) -> ScanProgressReporter:
     return reporter
 
 
+async def get_scan_configuration_from_db(db) -> Optional[dict]:
+    """Fetch scan configuration from database."""
+    result = await db.execute(select(ScanConfiguration).limit(1))
+    config = result.scalar_one_or_none()
+
+    if config:
+        return {
+            "quick_pages": config.quick_pages,
+            "standard_pages": config.standard_pages,
+            "deep_pages": config.deep_pages,
+        }
+    return None
+
+
 @celery_app.task(bind=True, name="app.workers.tasks.scan_tasks.run_web_scan")
 def run_web_scan(self, scan_id: str, application_id: str):
     """
@@ -52,43 +67,98 @@ def run_web_scan(self, scan_id: str, application_id: str):
     4. Runs all compliance detectors
     5. Stores findings and evidence
     """
-    return asyncio.get_event_loop().run_until_complete(
-        _run_web_scan_async(self, scan_id, application_id)
-    )
+    try:
+        return asyncio.get_event_loop().run_until_complete(
+            _run_web_scan_async(self, scan_id, application_id)
+        )
+    except Exception as e:
+        # Handle timeout and other exceptions that escape the async handler
+        # This ensures scan status is updated even for Celery timeouts
+        error_message = str(e)
+        if "SoftTimeLimitExceeded" in type(e).__name__ or "TimeLimitExceeded" in type(e).__name__:
+            error_message = "Scan timed out. Try reducing the number of pages or using a Quick scan."
+
+        # Update scan status synchronously
+        try:
+            import asyncio as aio
+            loop = aio.new_event_loop()
+            loop.run_until_complete(_mark_scan_failed(scan_id, error_message))
+            loop.close()
+        except Exception as update_error:
+            print(f"[SCAN] Failed to update scan status: {update_error}")
+
+        raise
 
 
-def get_scan_type_config(scan_type: ScanType) -> dict:
+async def _mark_scan_failed(scan_id: str, error_message: str):
+    """Mark a scan as failed in the database."""
+    async with async_session_maker() as db:
+        scan = await db.get(Scan, uuid.UUID(scan_id))
+        if scan and scan.status == ScanStatus.RUNNING:
+            scan.status = ScanStatus.FAILED
+            scan.status_message = error_message
+            scan.completed_at = datetime.utcnow()
+            await db.commit()
+            print(f"[SCAN] Marked scan {scan_id} as FAILED: {error_message}")
+
+
+def calculate_timeout(pages: int) -> int:
+    """
+    Calculate timeout based on page count.
+
+    Formula: timeout = (180 + pages × 30) × 1.2
+    """
+    return int((180 + pages * 30) * 1.2)
+
+
+def get_scan_type_config(scan_type: ScanType, configured_pages: Optional[dict] = None) -> dict:
     """
     Get configuration based on scan type.
 
-    QUICK: Fast scan (~2-5 min), basic compliance checks
-    STANDARD: Balanced scan (~5-15 min), all DPDP sections
-    DEEP: Comprehensive scan (~15-60 min), full analysis with NLP
+    QUICK: Fast scan, basic compliance checks
+    STANDARD: Balanced scan, all DPDP sections
+    DEEP: Comprehensive scan, full analysis with NLP
+
+    If configured_pages is provided, uses those values for page counts.
+    Otherwise falls back to defaults.
     """
+    # Default page counts
+    quick_pages = 20
+    standard_pages = 75
+    deep_pages = 200
+
+    # Use configured values if provided
+    if configured_pages:
+        quick_pages = configured_pages.get("quick_pages", quick_pages)
+        standard_pages = configured_pages.get("standard_pages", standard_pages)
+        deep_pages = configured_pages.get("deep_pages", deep_pages)
+
+    # All scan types run all detectors and capture screenshots
+    # They only differ in page count
     configs = {
         ScanType.QUICK: {
-            "max_pages": 20,
-            "timeout_seconds": 300,
-            "capture_screenshots": False,
-            "detectors": ["privacy_notice", "consent", "dark_patterns"],
+            "max_pages": quick_pages,
+            "timeout_seconds": calculate_timeout(quick_pages),
+            "capture_screenshots": True,
+            "detectors": ["all"],
             "enable_nlp": False,
-            "description": "Quick compliance check - Privacy Notice, Consent, Dark Patterns",
+            "description": f"Quick scan - {quick_pages} pages, all DPDP sections",
         },
         ScanType.STANDARD: {
-            "max_pages": 50,
-            "timeout_seconds": 900,
+            "max_pages": standard_pages,
+            "timeout_seconds": calculate_timeout(standard_pages),
             "capture_screenshots": True,
             "detectors": ["all"],
             "enable_nlp": False,
-            "description": "Standard compliance audit - All DPDP Sections",
+            "description": f"Standard scan - {standard_pages} pages, all DPDP sections",
         },
         ScanType.DEEP: {
-            "max_pages": 200,
-            "timeout_seconds": 3600,
+            "max_pages": deep_pages,
+            "timeout_seconds": calculate_timeout(deep_pages),
             "capture_screenshots": True,
             "detectors": ["all"],
-            "enable_nlp": True,
-            "description": "Deep compliance audit - Full analysis with NLP",
+            "enable_nlp": False,
+            "description": f"Deep scan - {deep_pages} pages, all DPDP sections",
         },
     }
     return configs.get(scan_type, configs[ScanType.STANDARD])
@@ -98,9 +168,7 @@ def get_detectors_for_scan_type(scan_type: ScanType):
     """
     Get the appropriate detectors based on scan type.
 
-    Quick Scan: Essential detectors for basic compliance
-    Standard Scan: All DPDP section detectors
-    Deep Scan: All detectors with enhanced analysis
+    All scan types run the same detectors - they only differ in page count.
     """
     from app.detectors import (
         PrivacyNoticeDetector,
@@ -113,15 +181,7 @@ def get_detectors_for_scan_type(scan_type: ScanType):
         SignificantDataFiduciaryDetector,
     )
 
-    if scan_type == ScanType.QUICK:
-        # Quick scan: Essential compliance checks
-        return [
-            PrivacyNoticeDetector(),      # Section 5 - Privacy Notice
-            ConsentDetector(),            # Section 6 - Consent (includes withdrawal 6(6))
-            DarkPatternDetector(),        # Section 18 - Dark Patterns
-        ]
-
-    # Standard and Deep scans: All DPDP sections
+    # All scan types run all detectors - only page count differs
     return [
         PrivacyNoticeDetector(),      # Section 5 - Privacy Notice
         ConsentDetector(),            # Section 6 - Consent (includes withdrawal 6(6))
@@ -151,14 +211,18 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             # Create progress reporter for WebSocket updates
             reporter = await create_progress_reporter(scan_id)
             reporter.set_total_steps(100)
+            reporter.start_timer()
 
             # Update scan status
             scan.status = ScanStatus.RUNNING
             scan.started_at = datetime.utcnow()
             await db.commit()
 
-            # Get scan type configuration
-            scan_type_config = get_scan_type_config(scan.scan_type)
+            # Get scan configuration from database
+            configured_pages = await get_scan_configuration_from_db(db)
+
+            # Get scan type configuration with configured page counts
+            scan_type_config = get_scan_type_config(scan.scan_type, configured_pages)
 
             # Phase 1: Initialization (0-10%)
             update_task_progress(0, 100, "Initializing scanner...")
@@ -198,16 +262,43 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                 credentials = application.auth_config.get('credentials', {})
                 print(f"[SCAN DEBUG] Username configured: {bool(credentials.get('username') or application.auth_config.get('username'))}")
 
+            # Create a callback to update progress during crawling
+            async def on_page_discovered(pages_found: int, current_url: str):
+                # Update the scan record in database during crawl
+                scan.pages_scanned = pages_found
+                scan.total_pages = max_pages  # Estimated max
+                scan.current_url = current_url  # Save current URL for display
+                await db.commit()
+
+                # Sync reporter's internal page count
+                reporter._pages_scanned = pages_found
+                reporter._total_pages = max_pages
+
+                # Calculate progress (crawl phase is 10-40%)
+                crawl_progress = 10 + int((pages_found / max_pages) * 30)
+                await reporter.update(
+                    step=min(crawl_progress, 39),  # Cap at 39 to leave room for Phase 3
+                    message=f"Crawling: {pages_found}/{max_pages} pages discovered",
+                    current_url=current_url,
+                )
+
             crawler = WebCrawler(
                 base_url=scan_url,
                 max_pages=max_pages,
                 auth_config=application.auth_config,
+                on_page_discovered=on_page_discovered,
             )
 
+            # Set initial total pages estimate for progress display
+            reporter.set_total_pages(max_pages)
             await reporter.update(step=10, message=f"Crawling website: {application.url} (max {max_pages} pages)")
 
             pages = await crawler.crawl()
             total_pages = len(pages)
+
+            # Set total pages for progress tracking
+            reporter.set_total_pages(total_pages)
+            scan.total_pages = total_pages
 
             # Debug logging for crawl results
             print(f"[SCAN DEBUG] Crawl complete - Total pages found: {total_pages}")
@@ -266,11 +357,19 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                             all_findings.append(finding)
                             findings_count += 1
 
+                            # Track severity count
+                            severity_value = finding_data.severity.value if hasattr(finding_data.severity, 'value') else finding_data.severity
+                            reporter.increment_severity(severity_value)
+
                             # Report finding via WebSocket
                             await reporter.report_finding({
+                                "id": str(finding.id),
                                 "title": finding_data.title,
-                                "severity": finding_data.severity.value if hasattr(finding_data.severity, 'value') else finding_data.severity,
+                                "severity": severity_value,
+                                "status": finding_data.status.value if hasattr(finding_data.status, 'value') else finding_data.status,
                                 "dpdp_section": finding_data.dpdp_section,
+                                "description": finding_data.description,
+                                "remediation": finding_data.remediation,
                                 "url": current_url,
                             })
                             await reporter.update(increment_findings=1)
@@ -282,6 +381,7 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                 pages_scanned += 1
                 scan.pages_scanned = pages_scanned
                 scan.findings_count = findings_count
+                scan.current_url = current_url  # Update current URL being scanned
 
                 # Commit after each page so progress is visible in the frontend
                 await db.commit()
@@ -289,9 +389,96 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             # Final commit (in case there were no pages)
             await db.commit()
 
-            # Phase 4: Finalizing (90-100%)
-            await reporter.update(step=90, message="Calculating compliance score...")
-            update_task_progress(90, 100, "Calculating compliance score...")
+            # Phase 4: Capture violation screenshots (90-95%)
+            # For Critical, High, and Medium severity findings WHERE the element EXISTS on the page
+            # Skip screenshots for "missing" findings (no element_selector means nothing to highlight)
+            screenshot_findings = [
+                f for f in all_findings
+                if f.severity in [FindingSeverity.CRITICAL, FindingSeverity.HIGH, FindingSeverity.MEDIUM]
+                and f.element_selector  # Only if element exists (not a "missing" finding)
+            ]
+
+            print(f"[SCAN] Phase 4: Screenshot capture - Total findings: {len(all_findings)}, Critical/High/Medium with element: {len(screenshot_findings)}")
+
+            if screenshot_findings:
+                await reporter.update(step=90, message=f"Capturing screenshots for {len(screenshot_findings)} violations...")
+                update_task_progress(90, 100, f"Capturing screenshots for {len(screenshot_findings)} violations...")
+
+                try:
+                    from app.evidence.violation_screenshot import ViolationScreenshotService
+
+                    screenshot_service = ViolationScreenshotService()
+                    await screenshot_service.initialize()
+
+                    # Prepare findings data for batch capture
+                    findings_for_screenshot = [
+                        {
+                            "id": str(f.id),
+                            "location": f.location,
+                            "element_selector": f.element_selector,
+                            "title": f.title,
+                            "severity": f.severity,
+                            "check_type": f.check_type.value if hasattr(f.check_type, 'value') else str(f.check_type),
+                        }
+                        for f in screenshot_findings
+                        if f.location and not f.location.startswith("windows://")  # Only web pages
+                    ]
+
+                    print(f"[SCAN] Eligible for screenshot (web pages only): {len(findings_for_screenshot)}")
+                    for fsdata in findings_for_screenshot:
+                        print(f"[SCAN] Finding for screenshot: id={fsdata['id'][:8]}, type={fsdata['check_type']}, selector={fsdata['element_selector']}")
+
+                    if findings_for_screenshot:
+                        screenshot_results = await screenshot_service.capture_batch_screenshots(
+                            scan_id=scan_id,
+                            findings=findings_for_screenshot,
+                            auth_config=application.auth_config,
+                            max_concurrent=2,  # Limit concurrent captures
+                        )
+
+                        # Update findings with screenshot paths using direct database updates
+                        # This is more reliable than modifying objects that were committed earlier
+                        from sqlalchemy import update
+
+                        updated_count = 0
+                        for result in screenshot_results:
+                            print(f"[SCAN] Screenshot result: finding={result.finding_id[:8]}, success={result.success}, path={result.storage_path}")
+                            if result.success and result.storage_path:
+                                try:
+                                    # Use direct UPDATE statement to ensure the change is saved
+                                    stmt = update(Finding).where(
+                                        Finding.id == uuid.UUID(result.finding_id)
+                                    ).values(screenshot_path=result.storage_path)
+                                    await db.execute(stmt)
+                                    updated_count += 1
+                                    print(f"[SCAN] Updated finding {result.finding_id[:8]} with screenshot path: {result.storage_path}")
+
+                                    # Also update the in-memory object for consistency
+                                    for finding in all_findings:
+                                        if str(finding.id) == result.finding_id:
+                                            finding.screenshot_path = result.storage_path
+                                            break
+                                except Exception as update_error:
+                                    print(f"[SCAN] Error updating finding {result.finding_id[:8]}: {update_error}")
+
+                        await db.commit()
+                        print(f"[SCAN] Screenshot phase complete: {sum(1 for r in screenshot_results if r.success)} captured, {updated_count} findings updated")
+                    else:
+                        print("[SCAN] No eligible findings for screenshot capture (all filtered out)")
+
+                    await screenshot_service.close()
+
+                except Exception as screenshot_error:
+                    import traceback
+                    print(f"[SCAN] Screenshot capture error (non-fatal): {screenshot_error}")
+                    print(f"[SCAN] Traceback: {traceback.format_exc()}")
+                    # Continue with scan completion even if screenshots fail
+            else:
+                print("[SCAN] No Critical/High findings - skipping screenshot capture")
+
+            # Phase 5: Finalizing (95-100%)
+            await reporter.update(step=95, message="Calculating compliance score...")
+            update_task_progress(95, 100, "Calculating compliance score...")
 
             # Calculate severity counts
             critical_count = sum(1 for f in all_findings if f.severity == FindingSeverity.CRITICAL)
@@ -299,13 +486,14 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             medium_count = sum(1 for f in all_findings if f.severity == FindingSeverity.MEDIUM)
             low_count = sum(1 for f in all_findings if f.severity == FindingSeverity.LOW)
 
-            # Calculate overall compliance score (100 - weighted deductions)
-            score = 100
-            score -= critical_count * 15
-            score -= high_count * 10
-            score -= medium_count * 5
-            score -= low_count * 2
-            overall_score = max(0, score)
+            # Calculate DPDP compliance score using advanced section-based scoring
+            from app.core.scoring import calculate_compliance_score
+            score_result = calculate_compliance_score(
+                findings=all_findings,
+                pages_scanned=pages_scanned,
+                return_detailed=True
+            )
+            overall_score = score_result.overall_score
 
             # Update scan with results
             scan.status = ScanStatus.COMPLETED
@@ -327,6 +515,9 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
                     "pages_scanned": pages_scanned,
                     "findings_count": findings_count,
                     "overall_score": overall_score,
+                    "grade": score_result.grade,
+                    "risk_level": score_result.risk_level,
+                    "penalty_exposure": score_result.penalty_exposure,
                     "critical": critical_count,
                     "high": high_count,
                     "medium": medium_count,
@@ -347,7 +538,7 @@ async def _run_web_scan_async(task, scan_id: str, application_id: str):
             # Mark scan as failed
             if scan:
                 scan.status = ScanStatus.FAILED
-                scan.error_message = str(e)
+                scan.status_message = str(e)
                 scan.completed_at = datetime.utcnow()
                 await db.commit()
 
@@ -376,9 +567,26 @@ def run_windows_scan(self, scan_id: str, application_id: str):
     5. Runs compliance detectors on extracted text
     6. Stores findings and evidence
     """
-    return asyncio.get_event_loop().run_until_complete(
-        _run_windows_scan_async(self, scan_id, application_id)
-    )
+    try:
+        return asyncio.get_event_loop().run_until_complete(
+            _run_windows_scan_async(self, scan_id, application_id)
+        )
+    except Exception as e:
+        # Handle timeout and other exceptions that escape the async handler
+        error_message = str(e)
+        if "SoftTimeLimitExceeded" in type(e).__name__ or "TimeLimitExceeded" in type(e).__name__:
+            error_message = "Scan timed out. Try reducing the number of pages or using a Quick scan."
+
+        # Update scan status synchronously
+        try:
+            import asyncio as aio
+            loop = aio.new_event_loop()
+            loop.run_until_complete(_mark_scan_failed(scan_id, error_message))
+            loop.close()
+        except Exception as update_error:
+            print(f"[SCAN] Failed to update scan status: {update_error}")
+
+        raise
 
 
 async def _run_windows_scan_async(task, scan_id: str, application_id: str):
@@ -398,14 +606,18 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
             # Create progress reporter for WebSocket updates
             reporter = await create_progress_reporter(scan_id)
             reporter.set_total_steps(100)
+            reporter.start_timer()
 
             # Update scan status
             scan.status = ScanStatus.RUNNING
             scan.started_at = datetime.utcnow()
             await db.commit()
 
-            # Get scan type configuration
-            scan_type_config = get_scan_type_config(scan.scan_type)
+            # Get scan configuration from database
+            configured_pages = await get_scan_configuration_from_db(db)
+
+            # Get scan type configuration with configured page counts
+            scan_type_config = get_scan_type_config(scan.scan_type, configured_pages)
 
             # Phase 1: Initialization (0-10%)
             update_task_progress(0, 100, "Launching Windows application...")
@@ -569,13 +781,14 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
             medium_count = sum(1 for f in all_findings if f.severity == FindingSeverity.MEDIUM)
             low_count = sum(1 for f in all_findings if f.severity == FindingSeverity.LOW)
 
-            # Calculate overall compliance score
-            score = 100
-            score -= critical_count * 15
-            score -= high_count * 10
-            score -= medium_count * 5
-            score -= low_count * 2
-            overall_score = max(0, score)
+            # Calculate DPDP compliance score using advanced section-based scoring
+            from app.core.scoring import calculate_compliance_score
+            score_result = calculate_compliance_score(
+                findings=all_findings,
+                pages_scanned=windows_scanned,
+                return_detailed=True
+            )
+            overall_score = score_result.overall_score
 
             # Update scan with results
             scan.status = ScanStatus.COMPLETED
@@ -597,6 +810,9 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
                     "windows_scanned": windows_scanned,
                     "findings_count": findings_count,
                     "overall_score": overall_score,
+                    "grade": score_result.grade,
+                    "risk_level": score_result.risk_level,
+                    "penalty_exposure": score_result.penalty_exposure,
                     "critical": critical_count,
                     "high": high_count,
                     "medium": medium_count,
@@ -617,7 +833,7 @@ async def _run_windows_scan_async(task, scan_id: str, application_id: str):
             # Mark scan as failed
             if scan:
                 scan.status = ScanStatus.FAILED
-                scan.error_message = str(e)
+                scan.status_message = str(e)
                 scan.completed_at = datetime.utcnow()
                 await db.commit()
 

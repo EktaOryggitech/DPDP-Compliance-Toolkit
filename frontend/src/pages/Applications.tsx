@@ -1,19 +1,115 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { PlusIcon, TrashIcon, PlayIcon, KeyIcon, BoltIcon, AdjustmentsHorizontalIcon, MagnifyingGlassCircleIcon, PencilSquareIcon } from '@heroicons/react/24/outline'
+import { PlusIcon, TrashIcon, PlayIcon, KeyIcon, BoltIcon, AdjustmentsHorizontalIcon, MagnifyingGlassCircleIcon, PencilSquareIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import toast from 'react-hot-toast'
 import { applicationsApi, scansApi } from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 50, 100]
+const DEFAULT_PAGE_SIZE = 5
+
 type ScanType = 'quick' | 'standard' | 'deep'
+type SortField = 'name' | 'type' | 'url' | 'last_scan_at' | 'is_active'
+type SortOrder = 'asc' | 'desc'
+
+const typeOptions = ['all', 'web', 'windows']
+const statusOptions = ['all', 'active', 'inactive']
+
+// Column header with sort and inline filter
+function FilterableHeader({
+  label,
+  field,
+  currentSort,
+  currentOrder,
+  onSort,
+  filterType,
+  filterValue,
+  onFilterChange,
+  filterOptions,
+  placeholder,
+}: {
+  label: string
+  field: SortField
+  currentSort: SortField
+  currentOrder: SortOrder
+  onSort: (field: SortField) => void
+  filterType: 'text' | 'select'
+  filterValue: string
+  onFilterChange: (value: string) => void
+  filterOptions?: string[]
+  placeholder?: string
+}) {
+  const isActive = currentSort === field
+  const hasFilter = filterValue && filterValue !== 'all'
+
+  return (
+    <th className="px-4 py-2 text-left">
+      <div className="space-y-1">
+        {/* Sort button */}
+        <button
+          onClick={() => onSort(field)}
+          className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase hover:text-gray-700"
+        >
+          {label}
+          <span className="flex flex-col">
+            <ChevronUpIcon
+              className={`h-3 w-3 -mb-1 ${isActive && currentOrder === 'asc' ? 'text-primary-600' : 'text-gray-300'}`}
+            />
+            <ChevronDownIcon
+              className={`h-3 w-3 ${isActive && currentOrder === 'desc' ? 'text-primary-600' : 'text-gray-300'}`}
+            />
+          </span>
+        </button>
+        {/* Filter input */}
+        {filterType === 'select' && filterOptions ? (
+          <select
+            value={filterValue}
+            onChange={(e) => onFilterChange(e.target.value)}
+            className={`w-full text-xs border rounded px-1.5 py-1 focus:ring-primary-500 focus:border-primary-500 ${
+              hasFilter ? 'border-primary-500 bg-primary-50' : 'border-gray-300'
+            }`}
+          >
+            {filterOptions.map(opt => (
+              <option key={opt} value={opt}>
+                {opt === 'all' ? 'All' : opt.charAt(0).toUpperCase() + opt.slice(1)}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="text"
+            value={filterValue}
+            onChange={(e) => onFilterChange(e.target.value)}
+            placeholder={placeholder || 'Filter...'}
+            className={`w-full text-xs border rounded px-1.5 py-1 focus:ring-primary-500 focus:border-primary-500 ${
+              hasFilter ? 'border-primary-500 bg-primary-50' : 'border-gray-300'
+            }`}
+          />
+        )}
+      </div>
+    </th>
+  )
+}
+
+// Simple header without filter
+function SimpleHeader({ label }: { label: string }) {
+  return (
+    <th className="px-4 py-2 text-left">
+      <div className="space-y-1">
+        <span className="text-xs font-medium text-gray-500 uppercase">{label}</span>
+        <div className="h-6"></div>
+      </div>
+    </th>
+  )
+}
 
 const scanTypeConfig = {
   quick: {
     icon: BoltIcon,
     title: 'Quick Scan',
-    description: 'Fast compliance check (~10-20 pages)',
+    description: 'All checks on ~20 pages',
     maxPages: 20,
-    features: ['Privacy Notice Check', 'Basic Consent Check', 'Common Dark Patterns'],
+    features: ['All DPDP Sections', 'Screenshot Evidence', 'Dark Patterns'],
     time: '2-5 minutes',
     color: 'text-yellow-600',
     bgColor: 'bg-yellow-50',
@@ -22,9 +118,9 @@ const scanTypeConfig = {
   standard: {
     icon: AdjustmentsHorizontalIcon,
     title: 'Standard Scan',
-    description: 'Balanced compliance audit (~50 pages)',
-    maxPages: 50,
-    features: ['All DPDP Sections', 'Screenshot Evidence', 'Consent Analysis', 'Children Data Check'],
+    description: 'All checks on ~75 pages',
+    maxPages: 75,
+    features: ['All DPDP Sections', 'Screenshot Evidence', 'Dark Patterns'],
     time: '5-15 minutes',
     color: 'text-blue-600',
     bgColor: 'bg-blue-50',
@@ -33,9 +129,9 @@ const scanTypeConfig = {
   deep: {
     icon: MagnifyingGlassCircleIcon,
     title: 'Deep Scan',
-    description: 'Comprehensive audit (~200+ pages)',
+    description: 'All checks on ~200 pages',
     maxPages: 200,
-    features: ['Full Site Crawl', 'NLP Analysis', 'OCR Text Extraction', 'All Dark Patterns', 'Grievance Mechanism'],
+    features: ['All DPDP Sections', 'Screenshot Evidence', 'Dark Patterns'],
     time: '15-60 minutes',
     color: 'text-purple-600',
     bgColor: 'bg-purple-50',
@@ -77,6 +173,28 @@ export default function Applications() {
   const [isScanModalOpen, setIsScanModalOpen] = useState(false)
   const [selectedAppForScan, setSelectedAppForScan] = useState<Application | null>(null)
   const [selectedScanType, setSelectedScanType] = useState<ScanType>('standard')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
+  const [sortField, setSortField] = useState<SortField>('name')
+  const [sortOrder, setSortOrder] = useState<SortOrder>('asc')
+
+  // Column filters
+  const [filters, setFilters] = useState({
+    name: '',
+    type: 'all',
+    url: '',
+    status: 'all',
+  })
+
+  const updateFilter = (key: keyof typeof filters, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }))
+  }
+
+  const clearFilters = () => {
+    setFilters({ name: '', type: 'all', url: '', status: 'all' })
+  }
+
+  const hasActiveFilters = filters.name || filters.type !== 'all' || filters.url || filters.status !== 'all'
   const [formData, setFormData] = useState({
     name: '',
     url: '',
@@ -99,6 +217,97 @@ export default function Applications() {
     queryKey: ['applications'],
     queryFn: () => applicationsApi.list(),
   })
+
+  // Handle sort change
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortOrder('asc')
+    }
+  }
+
+  // Filter, sort, and paginate applications
+  const filteredApps = useMemo(() => {
+    if (!data?.items) return []
+
+    let apps = [...data.items]
+
+    // Apply name filter
+    if (filters.name.trim()) {
+      const query = filters.name.toLowerCase()
+      apps = apps.filter((app: Application) =>
+        app.name.toLowerCase().includes(query) ||
+        app.description?.toLowerCase().includes(query)
+      )
+    }
+
+    // Apply URL filter
+    if (filters.url.trim()) {
+      const query = filters.url.toLowerCase()
+      apps = apps.filter((app: Application) =>
+        app.url?.toLowerCase().includes(query)
+      )
+    }
+
+    // Apply type filter
+    if (filters.type !== 'all') {
+      apps = apps.filter((app: Application) => app.type === filters.type)
+    }
+
+    // Apply status filter
+    if (filters.status !== 'all') {
+      apps = apps.filter((app: Application) =>
+        filters.status === 'active' ? app.is_active : !app.is_active
+      )
+    }
+
+    // Apply sorting
+    apps.sort((a: Application, b: Application) => {
+      let comparison = 0
+      switch (sortField) {
+        case 'name':
+          comparison = a.name.localeCompare(b.name)
+          break
+        case 'type':
+          comparison = a.type.localeCompare(b.type)
+          break
+        case 'url':
+          comparison = (a.url || '').localeCompare(b.url || '')
+          break
+        case 'last_scan_at':
+          const dateA = a.last_scan_at ? new Date(a.last_scan_at).getTime() : 0
+          const dateB = b.last_scan_at ? new Date(b.last_scan_at).getTime() : 0
+          comparison = dateA - dateB
+          break
+        case 'is_active':
+          comparison = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0)
+          break
+        default:
+          comparison = 0
+      }
+      return sortOrder === 'asc' ? comparison : -comparison
+    })
+
+    return apps
+  }, [data?.items, filters, sortField, sortOrder])
+
+  const totalPages = Math.ceil(filteredApps.length / pageSize)
+  const paginatedApps = useMemo(() => {
+    const start = (currentPage - 1) * pageSize
+    return filteredApps.slice(start, start + pageSize)
+  }, [filteredApps, currentPage, pageSize])
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize)
+    setCurrentPage(1) // Reset to first page when changing page size
+  }
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [filters, sortField, sortOrder])
 
   // Query for running scans to disable edit/delete buttons
   const { data: runningScansData } = useQuery({
@@ -295,53 +504,97 @@ export default function Applications() {
             Manage web and Windows applications for compliance scanning
           </p>
         </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary-600 hover:bg-primary-700"
-        >
-          <PlusIcon className="-ml-1 mr-2 h-5 w-5" />
-          Add Application
-        </button>
+        <div className="flex items-center gap-4">
+          {hasActiveFilters && (
+            <button
+              onClick={clearFilters}
+              className="text-sm text-primary-600 hover:text-primary-800 flex items-center gap-1"
+            >
+              <XMarkIcon className="h-4 w-4" />
+              Clear filters
+            </button>
+          )}
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-primary-600 hover:bg-primary-700"
+          >
+            <PlusIcon className="-ml-1 mr-2 h-5 w-5" />
+            Add Application
+          </button>
+        </div>
       </div>
 
       {/* Applications List */}
       <div className="bg-white shadow overflow-hidden rounded-lg">
         {isLoading ? (
           <div className="p-8 text-center text-gray-500">Loading...</div>
-        ) : data?.items?.length > 0 ? (
+        ) : paginatedApps.length > 0 ? (
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  Name
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  Type
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  URL / Path
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  Last Scan
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
-                  Actions
+                <FilterableHeader
+                  label="Name"
+                  field="name"
+                  currentSort={sortField}
+                  currentOrder={sortOrder}
+                  onSort={handleSort}
+                  filterType="text"
+                  filterValue={filters.name}
+                  onFilterChange={(v) => updateFilter('name', v)}
+                  placeholder="Search..."
+                />
+                <FilterableHeader
+                  label="Type"
+                  field="type"
+                  currentSort={sortField}
+                  currentOrder={sortOrder}
+                  onSort={handleSort}
+                  filterType="select"
+                  filterValue={filters.type}
+                  onFilterChange={(v) => updateFilter('type', v)}
+                  filterOptions={typeOptions}
+                />
+                <FilterableHeader
+                  label="URL / Path"
+                  field="url"
+                  currentSort={sortField}
+                  currentOrder={sortOrder}
+                  onSort={handleSort}
+                  filterType="text"
+                  filterValue={filters.url}
+                  onFilterChange={(v) => updateFilter('url', v)}
+                  placeholder="Search..."
+                />
+                <SimpleHeader label="Last Scan" />
+                <FilterableHeader
+                  label="Status"
+                  field="is_active"
+                  currentSort={sortField}
+                  currentOrder={sortOrder}
+                  onSort={handleSort}
+                  filterType="select"
+                  filterValue={filters.status}
+                  onFilterChange={(v) => updateFilter('status', v)}
+                  filterOptions={statusOptions}
+                />
+                <th className="px-4 py-2 text-right">
+                  <div className="space-y-1">
+                    <span className="text-xs font-medium text-gray-500 uppercase">Actions</span>
+                    <div className="h-6"></div>
+                  </div>
                 </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {data.items.map((app: Application) => (
+              {paginatedApps.map((app: Application) => (
                 <tr key={app.id}>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-3 whitespace-nowrap">
                     <div className="text-sm font-medium text-gray-900">{app.name}</div>
                     {app.description && (
                       <div className="text-sm text-gray-500">{app.description}</div>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-3 whitespace-nowrap">
                     <span
                       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         app.type === 'web'
@@ -352,15 +605,15 @@ export default function Applications() {
                       {app.type === 'web' ? 'Web' : 'Windows'}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {app.url || '-'}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                     {app.last_scan_at
                       ? new Date(app.last_scan_at).toLocaleDateString()
                       : 'Never'}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-3 whitespace-nowrap">
                     {appsWithRunningScans.has(app.id) ? (
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 animate-pulse">
                         <svg className="animate-spin -ml-0.5 mr-1.5 h-3 w-3 text-blue-600" fill="none" viewBox="0 0 24 24">
@@ -381,7 +634,7 @@ export default function Applications() {
                       </span>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                  <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
                     {/* Edit Button - Disabled when scan is running */}
                     <button
                       onClick={() => handleEditApp(app)}
@@ -432,7 +685,54 @@ export default function Applications() {
           </table>
         ) : (
           <div className="p-8 text-center text-gray-500">
-            No applications yet. Click "Add Application" to get started.
+            {hasActiveFilters
+              ? 'No applications matching your filters.'
+              : 'No applications yet. Click "Add Application" to get started.'}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {filteredApps.length > 0 && (
+          <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">Show</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                  className="border border-gray-300 rounded-md text-sm py-1 px-2 focus:ring-primary-500 focus:border-primary-500"
+                >
+                  {PAGE_SIZE_OPTIONS.map(size => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+                <span className="text-sm text-gray-500">per page</span>
+              </div>
+              <div className="text-sm text-gray-500">
+                Showing {((currentPage - 1) * pageSize) + 1} to {Math.min(currentPage * pageSize, filteredApps.length)} of {filteredApps.length} applications
+              </div>
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="p-2 rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ChevronLeftIcon className="h-4 w-4" />
+                </button>
+                <span className="text-sm text-gray-700">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="p-2 rounded-md border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ChevronRightIcon className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1163,16 +1463,17 @@ export default function Applications() {
                 <h4 className="text-sm font-medium text-gray-900 mb-2">
                   DPDP Compliance Checks Included:
                 </h4>
+                <p className="text-xs text-gray-500 mb-2">All scan types run the same checks - only page count differs.</p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
                     { section: 'Section 5', name: 'Privacy Notice', included: true },
                     { section: 'Section 6', name: 'Consent Mechanism', included: true },
-                    { section: 'Section 6(6)', name: 'Consent Withdrawal', included: true }, // Part of ConsentDetector
-                    { section: 'Section 8', name: 'Data Retention', included: selectedScanType !== 'quick' },
-                    { section: 'Section 9', name: 'Children Data Protection', included: selectedScanType !== 'quick' },
-                    { section: 'Section 10', name: 'SDF Obligations', included: selectedScanType !== 'quick' },
-                    { section: 'Section 11-12', name: 'Data Principal Rights', included: selectedScanType !== 'quick' },
-                    { section: 'Section 13', name: 'Grievance Mechanism', included: selectedScanType !== 'quick' },
+                    { section: 'Section 6(6)', name: 'Consent Withdrawal', included: true },
+                    { section: 'Section 8', name: 'Data Retention', included: true },
+                    { section: 'Section 9', name: 'Children Data Protection', included: true },
+                    { section: 'Section 10', name: 'SDF Obligations', included: true },
+                    { section: 'Section 11-12', name: 'Data Principal Rights', included: true },
+                    { section: 'Section 13', name: 'Grievance Mechanism', included: true },
                     { section: 'Section 18', name: 'Dark Patterns', included: true },
                   ].map((check) => (
                     <div
@@ -1197,10 +1498,7 @@ export default function Applications() {
 
               {/* Technologies Used */}
               <div className="text-xs text-gray-500 mb-4">
-                <span className="font-medium">Technologies:</span> Playwright, BeautifulSoup,
-                {selectedScanType === 'deep' && ' spaCy NLP, OpenCV, Tesseract OCR'}
-                {selectedScanType === 'standard' && ' Basic NLP Analysis'}
-                {selectedScanType === 'quick' && ' Pattern Matching'}
+                <span className="font-medium">Technologies:</span> Playwright, BeautifulSoup, Pattern Matching
               </div>
 
               <div className="flex justify-end space-x-3">

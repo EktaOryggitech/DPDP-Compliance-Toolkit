@@ -173,6 +173,16 @@ export const scansApi = {
     return response.data
   },
 
+  bulkDelete: async (ids: string[]) => {
+    const response = await api.post('/scans/bulk-delete', ids)
+    return response.data
+  },
+
+  deleteAll: async () => {
+    const response = await api.delete('/scans/all')
+    return response.data
+  },
+
   getSummary: async () => {
     const response = await api.get('/scans/summary/stats')
     return response.data
@@ -245,6 +255,69 @@ export const reportsApi = {
     const response = await api.get(`/reports/${scanId}/excel`, {
       responseType: 'blob',
     })
+    return response.data
+  },
+}
+
+// Scan Configuration API
+export interface ScanConfiguration {
+  id: string
+  quick_pages: number
+  standard_pages: number
+  deep_pages: number
+  created_at: string
+  updated_at: string
+  quick_min: number
+  quick_max: number
+  standard_min: number
+  standard_max: number
+  deep_min: number
+  deep_max: number
+}
+
+export const scanConfigApi = {
+  get: async (): Promise<ScanConfiguration> => {
+    const response = await api.get('/scan-configuration')
+    return response.data
+  },
+
+  update: async (data: {
+    quick_pages?: number
+    standard_pages?: number
+    deep_pages?: number
+  }): Promise<ScanConfiguration> => {
+    const response = await api.put('/scan-configuration', data)
+    return response.data
+  },
+}
+
+// Dashboard API
+export interface DashboardStats {
+  total_scans: number
+  critical_findings: number
+  compliant_apps: number
+  pending_scans: number
+}
+
+export interface FindingsBySectionItem {
+  name: string
+  findings: number
+}
+
+export interface FindingsBySeverityItem {
+  name: string
+  value: number
+}
+
+export interface DashboardData {
+  stats: DashboardStats
+  findings_by_section: FindingsBySectionItem[]
+  findings_by_severity: FindingsBySeverityItem[]
+}
+
+export const dashboardApi = {
+  getData: async (): Promise<DashboardData> => {
+    const response = await api.get('/dashboard')
     return response.data
   },
 }

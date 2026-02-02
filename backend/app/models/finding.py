@@ -136,6 +136,9 @@ class Finding(BaseModel):
     # Additional Data
     extra_data: Mapped[Optional[dict]] = mapped_column(JSON)  # Additional context
 
+    # Screenshot Evidence
+    screenshot_path: Mapped[Optional[str]] = mapped_column(Text)  # MinIO storage path for violation screenshot
+
     # Relationships
     scan: Mapped["Scan"] = relationship("Scan", back_populates="findings")
     evidence: Mapped[List["Evidence"]] = relationship(

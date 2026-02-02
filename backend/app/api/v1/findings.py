@@ -22,6 +22,36 @@ from app.schemas.common import PaginatedResponse, PaginationParams
 router = APIRouter()
 
 
+def get_screenshot_url(screenshot_path: Optional[str]) -> Optional[str]:
+    """Generate proxy URL for a screenshot if it exists.
+
+    Instead of using MinIO presigned URLs (which have signature issues
+    when accessed from browser), we use a proxy endpoint that serves
+    the image through the backend.
+    """
+    if not screenshot_path:
+        return None
+
+    try:
+        # Convert MinIO path to proxy URL
+        # Path format: scans/{scan_id}/{year}/{month}/{day}/{filename}.jpg
+        # URL format: /api/v1/evidence/screenshot/{scan_id}/{year}/{month}/{day}/{filename}.jpg
+        if screenshot_path.startswith("scans/"):
+            return f"/api/v1/evidence/screenshot/{screenshot_path[6:]}"
+        return None
+    except Exception as e:
+        print(f"Error generating screenshot URL: {e}")
+        return None
+
+
+def enrich_finding_with_screenshot(finding: Finding) -> FindingResponse:
+    """Convert finding to response with screenshot URL."""
+    response = FindingResponse.model_validate(finding)
+    if finding.screenshot_path:
+        response.screenshot_url = get_screenshot_url(finding.screenshot_path)
+    return response
+
+
 @router.get("", response_model=PaginatedResponse[FindingResponse])
 async def list_findings(
     db: DbSession,
@@ -65,8 +95,14 @@ async def list_findings(
     result = await db.execute(query)
     findings = result.scalars().all()
 
+    # Enrich findings with screenshot URLs
+    enriched_findings = []
+    for f in findings:
+        enriched = enrich_finding_with_screenshot(f)
+        enriched_findings.append(enriched)
+
     return PaginatedResponse.create(
-        items=[FindingResponse.model_validate(f) for f in findings],
+        items=enriched_findings,
         total=total,
         params=PaginationParams(page=page, page_size=page_size),
     )
@@ -98,6 +134,10 @@ async def get_finding(
 
     response = FindingDetail.model_validate(finding)
     response.evidence = [EvidenceResponse.model_validate(e) for e in evidence]
+
+    # Add screenshot URL if available
+    if finding.screenshot_path:
+        response.screenshot_url = get_screenshot_url(finding.screenshot_path)
 
     return response
 
@@ -146,7 +186,8 @@ async def get_findings_grouped_by_section(
             }
 
         grouped[section]["total"] += 1
-        grouped[section]["findings"].append(FindingResponse.model_validate(finding))
+        enriched = enrich_finding_with_screenshot(finding)
+        grouped[section]["findings"].append(enriched)
 
         if finding.status == FindingStatus.PASS:
             grouped[section]["passed"] += 1

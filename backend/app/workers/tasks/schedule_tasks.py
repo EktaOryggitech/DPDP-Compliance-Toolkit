@@ -52,10 +52,10 @@ async def _check_scheduled_scans_async() -> Dict[str, Any]:
             if not application or not application.is_active:
                 continue
 
-            # Create a new scan
+            # Create a new scan (use STANDARD type for scheduled scans)
             scan = Scan(
                 application_id=schedule.application_id,
-                scan_type=ScanType.SCHEDULED,
+                scan_type=ScanType.STANDARD,
                 status=ScanStatus.PENDING,
             )
             db.add(scan)
@@ -64,7 +64,7 @@ async def _check_scheduled_scans_async() -> Dict[str, Any]:
             # Trigger the appropriate scan task
             from app.workers.tasks.scan_tasks import run_web_scan, run_windows_scan
 
-            if application.app_type == ApplicationType.WEB:
+            if application.type == ApplicationType.WEB:
                 run_web_scan.delay(str(scan.id), str(application.id))
             else:
                 run_windows_scan.delay(str(scan.id), str(application.id))
@@ -95,11 +95,10 @@ def _calculate_next_run(schedule: ScanSchedule) -> datetime:
         return now + timedelta(days=1)
     elif schedule.frequency == ScheduleFrequency.WEEKLY:
         return now + timedelta(weeks=1)
+    elif schedule.frequency == ScheduleFrequency.BIWEEKLY:
+        return now + timedelta(weeks=2)
     elif schedule.frequency == ScheduleFrequency.MONTHLY:
-        # Roughly 30 days
         return now + timedelta(days=30)
-    elif schedule.frequency == ScheduleFrequency.QUARTERLY:
-        return now + timedelta(days=90)
     else:
         return now + timedelta(days=1)
 

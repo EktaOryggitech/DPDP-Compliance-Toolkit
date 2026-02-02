@@ -19,14 +19,21 @@ class ScanCreate(BaseModel):
 
 
 class ScanProgress(BaseModel):
-    """Scan progress update schema (for WebSocket)."""
+    """Scan progress update schema (for WebSocket and polling)."""
     scan_id: uuid.UUID
-    status: ScanStatus
-    progress_percentage: int
-    pages_scanned: int
-    total_pages: Optional[int]
-    current_url: Optional[str]
-    message: Optional[str]
+    status: str
+    percent: int = 0
+    pages_scanned: int = 0
+    total_pages: Optional[int] = None
+    current_url: Optional[str] = None
+    message: Optional[str] = None
+    findings_count: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    elapsed_seconds: Optional[int] = None
+    estimated_remaining_seconds: Optional[int] = None
 
 
 class ScanSummary(BaseModel):

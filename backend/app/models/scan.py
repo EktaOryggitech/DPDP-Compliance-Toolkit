@@ -32,6 +32,7 @@ class ScanType(str, enum.Enum):
     QUICK = "quick"  # Fast scan, limited depth
     STANDARD = "standard"  # Balanced scan
     DEEP = "deep"  # Comprehensive scan
+    SCHEDULED = "scheduled"  # Scheduled scan (uses standard settings)
 
 
 class Scan(BaseModel):

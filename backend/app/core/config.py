@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     # MinIO (Object Storage)
     MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_EXTERNAL_ENDPOINT: str = "localhost:9000"  # Browser-accessible endpoint for presigned URLs
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "dpdp-evidence"

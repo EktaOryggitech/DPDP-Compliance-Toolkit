@@ -10,15 +10,34 @@ Features:
 - Material UI / Bootstrap / PrimeNG component support
 - Lazy loading and dynamic content handling
 - Menu expansion and sidebar navigation
+- Retry logic with exponential backoff
+- Multiple wait strategies for slow websites
+- Extended timeouts for government portals
 """
 import asyncio
+import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright, TimeoutError as PlaywrightTimeout
 
 from app.core.config import settings
+
+
+# Domains that typically need longer timeouts (government, large portals)
+SLOW_DOMAINS = [
+    '.gov.in', '.nic.in', '.gov', '.edu', '.ac.in',
+    'digilocker', 'uidai', 'incometax', 'gst', 'epfo',
+    'passport', 'aadhaar', 'umang', 'mygov',
+]
+
+# Wait strategies in order of preference
+WAIT_STRATEGIES = [
+    'domcontentloaded',  # Fastest - DOM is ready
+    'load',              # Medium - all resources loaded
+    'networkidle',       # Slowest - network is idle
+]
 
 
 @dataclass
@@ -106,6 +125,7 @@ class WebCrawler:
         auth_config: Optional[Dict] = None,
         headless: bool = True,
         spa_mode: bool = True,  # Enable SPA navigation by default
+        on_page_discovered: Optional[callable] = None,  # Callback when a page is discovered
     ):
         self.base_url = base_url.rstrip("/")
         self.base_domain = urlparse(base_url).netloc
@@ -113,6 +133,7 @@ class WebCrawler:
         self.auth_config = auth_config
         self.headless = headless if headless is not None else settings.BROWSER_HEADLESS
         self.spa_mode = spa_mode
+        self.on_page_discovered = on_page_discovered  # Callback(pages_found, current_url)
 
         self.visited_urls: Set[str] = set()
         self.visited_routes: Set[str] = set()  # Track SPA routes
@@ -124,6 +145,117 @@ class WebCrawler:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._main_page: Optional[Page] = None  # Persistent page for SPA navigation
+
+        # Determine if this is a slow domain requiring extended timeouts
+        self._is_slow_domain = self._check_slow_domain(base_url)
+        self._base_timeout = self._get_timeout_for_domain()
+        print(f"[SPA Crawler] Domain timeout: {self._base_timeout}ms (slow_domain={self._is_slow_domain})")
+
+    def _check_slow_domain(self, url: str) -> bool:
+        """Check if the URL belongs to a typically slow domain (gov, edu, etc.)."""
+        url_lower = url.lower()
+        for domain_pattern in SLOW_DOMAINS:
+            if domain_pattern in url_lower:
+                return True
+        return False
+
+    def _get_timeout_for_domain(self) -> int:
+        """Get appropriate timeout based on domain type."""
+        if self._is_slow_domain:
+            return 90000  # 90 seconds for slow domains
+        return settings.BROWSER_TIMEOUT_MS  # Default 30 seconds
+
+    async def _navigate_with_retry(
+        self,
+        page: Page,
+        url: str,
+        max_retries: int = 3,
+        timeout: Optional[int] = None,
+    ) -> bool:
+        """
+        Navigate to URL with retry logic and multiple wait strategies.
+
+        Args:
+            page: Playwright page
+            url: URL to navigate to
+            max_retries: Maximum number of retry attempts
+            timeout: Override timeout (uses domain-based timeout if not specified)
+
+        Returns:
+            True if navigation succeeded, False otherwise
+        """
+        timeout = timeout or self._base_timeout
+        last_error = None
+
+        for attempt in range(max_retries):
+            # Try each wait strategy
+            for wait_strategy in WAIT_STRATEGIES:
+                try:
+                    # Calculate timeout with backoff for retries
+                    attempt_timeout = timeout * (1 + attempt * 0.5)  # Increase timeout on retries
+
+                    print(f"[SPA Crawler] Navigation attempt {attempt + 1}/{max_retries} "
+                          f"(strategy: {wait_strategy}, timeout: {attempt_timeout:.0f}ms)")
+
+                    await page.goto(
+                        url,
+                        wait_until=wait_strategy,
+                        timeout=attempt_timeout,
+                    )
+
+                    # Success - wait a bit more for JS to settle
+                    await page.wait_for_timeout(settings.PAGE_LOAD_WAIT_MS)
+                    print(f"[SPA Crawler] Navigation successful with strategy: {wait_strategy}")
+                    return True
+
+                except PlaywrightTimeout as e:
+                    last_error = e
+                    print(f"[SPA Crawler] Timeout with {wait_strategy}: {e}")
+                    # Try next wait strategy
+                    continue
+
+                except Exception as e:
+                    last_error = e
+                    print(f"[SPA Crawler] Navigation error with {wait_strategy}: {e}")
+                    # Try next wait strategy
+                    continue
+
+            # All wait strategies failed for this attempt
+            if attempt < max_retries - 1:
+                # Wait before retry with exponential backoff + jitter
+                backoff = (2 ** attempt) + random.uniform(0, 1)
+                print(f"[SPA Crawler] All strategies failed, waiting {backoff:.1f}s before retry...")
+                await asyncio.sleep(backoff)
+
+        print(f"[SPA Crawler] Navigation failed after {max_retries} attempts: {last_error}")
+        return False
+
+    async def _safe_goto(
+        self,
+        page: Page,
+        url: str,
+        wait_until: str = "networkidle",
+        timeout: Optional[int] = None,
+    ) -> bool:
+        """
+        Safe navigation with fallback wait strategies.
+        Tries the specified strategy first, then falls back to others.
+        """
+        timeout = timeout or self._base_timeout
+        strategies_to_try = [wait_until] + [s for s in WAIT_STRATEGIES if s != wait_until]
+
+        for strategy in strategies_to_try:
+            try:
+                await page.goto(url, wait_until=strategy, timeout=timeout)
+                return True
+            except PlaywrightTimeout:
+                print(f"[SPA Crawler] Timeout with {strategy}, trying next strategy...")
+                continue
+            except Exception as e:
+                print(f"[SPA Crawler] Error with {strategy}: {e}")
+                continue
+
+        return False
 
     async def crawl(self) -> List[CrawledPage]:
         """
@@ -167,22 +299,26 @@ class WebCrawler:
                     # Navigate to base URL (strip /login from URL if present)
                     base_url_clean = self.base_url.replace("/login", "").replace("/signin", "")
                     print(f"[SPA Crawler] Navigating to base URL: {base_url_clean}")
-                    await self._main_page.goto(
+                    nav_success = await self._navigate_with_retry(
+                        self._main_page,
                         base_url_clean,
-                        wait_until="networkidle",
-                        timeout=settings.BROWSER_TIMEOUT_MS,
+                        max_retries=3,
                     )
+                    if not nav_success:
+                        print(f"[SPA Crawler] Warning: Could not navigate to {base_url_clean}")
             else:
                 # Create main page for SPA navigation
                 self._main_page = await self._context.new_page()
 
-                # Navigate to base URL first
+                # Navigate to base URL first with retry logic
                 print(f"[SPA Crawler] Navigating to base URL: {self.base_url}")
-                await self._main_page.goto(
+                nav_success = await self._navigate_with_retry(
+                    self._main_page,
                     self.base_url,
-                    wait_until="networkidle",
-                    timeout=settings.BROWSER_TIMEOUT_MS,
+                    max_retries=3,
                 )
+                if not nav_success:
+                    raise Exception(f"Failed to load {self.base_url} after multiple retries")
 
             print(f"[SPA Crawler] Page loaded, current URL: {self._main_page.url}")
             await self._wait_for_spa_ready(self._main_page)
@@ -204,6 +340,9 @@ class WebCrawler:
                     if route:
                         self.visited_routes.add(route)
                     print(f"[SPA Crawler] Captured authenticated page: {current_url} (route: {route})")
+                    # Notify about page discovery
+                    if self.on_page_discovered:
+                        await self.on_page_discovered(len(self.crawled_pages), current_url)
 
                 # Clear pages_to_visit of login URLs since we're authenticated
                 self.pages_to_visit = [url for url in self.pages_to_visit
@@ -224,6 +363,10 @@ class WebCrawler:
                         route = self._extract_route(url)
                         if route:
                             self.visited_routes.add(route)
+
+                        # Notify about page discovery
+                        if self.on_page_discovered:
+                            await self.on_page_discovered(len(self.crawled_pages), url)
 
                         # Add new links to queue
                         for link in page_data.links:
@@ -270,11 +413,14 @@ class WebCrawler:
                 else:
                     spa_start_url = self.base_url
                 print(f"[SPA Crawler] Navigating to SPA start URL: {spa_start_url}")
-                await self._main_page.goto(
+                nav_success = await self._navigate_with_retry(
+                    self._main_page,
                     spa_start_url,
-                    wait_until="networkidle",
-                    timeout=settings.BROWSER_TIMEOUT_MS,
+                    max_retries=2,
                 )
+                if not nav_success:
+                    print(f"[SPA Crawler] Could not navigate to SPA start URL, skipping SPA navigation")
+                    return
             await self._wait_for_spa_ready(self._main_page)
 
             # Try to expand any collapsed menus first
@@ -347,6 +493,10 @@ class WebCrawler:
                     page_data.route_path = route_after
                     self.crawled_pages.append(page_data)
                     self.visited_urls.add(url_after)
+
+                    # Notify about page discovery
+                    if self.on_page_discovered:
+                        await self.on_page_discovered(len(self.crawled_pages), url_after)
 
                     # Recursively discover more navigation in this route
                     if len(self.crawled_pages) < self.max_pages:
@@ -632,23 +782,23 @@ class WebCrawler:
             return None
 
     async def _crawl_page(self, url: str) -> Optional[CrawledPage]:
-        """Crawl a single page and extract content."""
+        """Crawl a single page and extract content with retry logic."""
         page = await self._context.new_page()
 
         try:
-            # Navigate to page
-            response = await page.goto(
+            # Navigate to page with retry logic
+            nav_success = await self._navigate_with_retry(
+                page,
                 url,
-                wait_until="networkidle",
-                timeout=settings.BROWSER_TIMEOUT_MS,
+                max_retries=2,  # Fewer retries for individual pages
             )
 
-            if not response or response.status >= 400:
+            if not nav_success:
                 await page.close()
                 return None
 
-            # Wait for dynamic content
-            await page.wait_for_timeout(settings.PAGE_LOAD_WAIT_MS)
+            # Check response status (get from page context if possible)
+            # Note: After retry, we may have loaded successfully
 
             # Extract page data
             title = await page.title()
@@ -833,7 +983,11 @@ class WebCrawler:
                 login_url = login_url.replace("localhost", "host.docker.internal")
                 login_url = login_url.replace("127.0.0.1", "host.docker.internal")
 
-                await page.goto(login_url, wait_until="networkidle", timeout=30000)
+                nav_success = await self._navigate_with_retry(page, login_url, max_retries=2, timeout=60000)
+                if not nav_success:
+                    print(f"[SPA Crawler] Failed to load login page: {login_url}")
+                    await page.close()
+                    return None
 
                 # Get credentials
                 credentials = self.auth_config.get("credentials", {})

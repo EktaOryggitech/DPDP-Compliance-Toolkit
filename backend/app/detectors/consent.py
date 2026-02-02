@@ -8,7 +8,7 @@ import re
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup, Tag
 
-from app.detectors.base import BaseDetector
+from app.detectors.base import BaseDetector, generate_css_selector
 from app.models.finding import CheckType, Finding, FindingSeverity, FindingStatus
 from app.scanners.web.crawler import CrawledPage
 
@@ -259,7 +259,7 @@ class ConsentDetector(BaseDetector):
                     title="Bundled consent detected",
                     description=f"A single checkbox combines multiple consent purposes: {', '.join(matched_purposes[:5])}. DPDP requires granular consent for each purpose.",
                     location=page.url,
-                    element_selector=f"input[id='{label_id}']" if label_id else None,
+                    element_selector=f"input[id='{label_id}']" if label_id else generate_css_selector(cb),
                     dpdp_section=self.dpdp_section,
                     remediation="Separate different consent purposes into individual checkboxes. Users should be able to consent to each purpose independently.",
                     extra_data={
@@ -326,7 +326,7 @@ class ConsentDetector(BaseDetector):
                         title="Hidden consent checkbox detected",
                         description="A consent checkbox appears to be hidden from users. This prevents informed consent.",
                         location=page.url,
-                        element_selector=f"input[id='{label_id}']" if label_id else None,
+                        element_selector=f"input[id='{label_id}']" if label_id else generate_css_selector(cb),
                         dpdp_section=self.dpdp_section,
                         remediation="Ensure all consent checkboxes are clearly visible to users.",
                     ))
@@ -348,11 +348,11 @@ class ConsentDetector(BaseDetector):
         has_withdrawal = any(kw in text_content for kw in withdrawal_keywords)
 
         # Check if this appears to be a form page with consent
-        has_consent_form = any(
+        consent_form = soup.find("form") if any(
             kw in text_content for kw in self.CONSENT_KEYWORDS
-        ) and soup.find("form")
+        ) else None
 
-        if has_consent_form and not has_withdrawal:
+        if consent_form and not has_withdrawal:
             visual_content = [
                 "CONSENT WITHDRAWAL MECHANISM MISSING",
                 "",
@@ -375,6 +375,7 @@ class ConsentDetector(BaseDetector):
                 title="No consent withdrawal mechanism found",
                 description="Page collects consent but does not mention how users can withdraw consent. DPDP requires easy consent withdrawal.",
                 location=page.url,
+                element_selector=generate_css_selector(consent_form),
                 dpdp_section=self.dpdp_section,
                 remediation="Add clear information about how users can withdraw their consent at any time.",
                 extra_data={
@@ -449,6 +450,9 @@ class ConsentDetector(BaseDetector):
                     ]
                     visual_box = generate_visual_box("COOKIE REJECT MISSING", visual_content)
 
+                    # Common selectors for cookie banners
+                    cookie_selector = element.get("selector") or "[class*='cookie'], [class*='consent'], [id*='cookie'], [id*='consent'], [class*='gdpr'], [class*='privacy-banner']"
+
                     findings.append(Finding(
                         check_type=CheckType.DARK_PATTERN_FORCED_ACTION,
                         severity=FindingSeverity.HIGH,
@@ -456,6 +460,7 @@ class ConsentDetector(BaseDetector):
                         title="Cookie banner lacks reject option",
                         description="Cookie consent banner provides accept option but no clear reject/decline option.",
                         location=page.url,
+                        element_selector=cookie_selector,
                         dpdp_section=self.dpdp_section,
                         remediation="Provide equally prominent accept and reject options in cookie consent banners.",
                         extra_data={
@@ -512,6 +517,9 @@ class ConsentDetector(BaseDetector):
                     ]
                     visual_box = generate_visual_box("PRE-CHECKED COOKIE", visual_content)
 
+                    # Try to get selector from the element, or use common cookie checkbox selectors
+                    checkbox_selector = element.get("selector") or "input[type='checkbox'][checked], [class*='cookie'] input[type='checkbox'], [class*='consent'] input[type='checkbox']"
+
                     findings.append(Finding(
                         check_type=CheckType.DARK_PATTERN_PRESELECTED,
                         severity=FindingSeverity.CRITICAL,
@@ -519,6 +527,7 @@ class ConsentDetector(BaseDetector):
                         title="Cookie consent checkbox pre-checked",
                         description=f"Cookie consent checkbox '{checkbox_label}' is pre-checked.",
                         location=page.url,
+                        element_selector=checkbox_selector,
                         dpdp_section=self.dpdp_section,
                         remediation="Remove pre-checked state from cookie consent checkboxes.",
                         extra_data={

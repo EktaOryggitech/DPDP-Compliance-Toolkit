@@ -11,6 +11,9 @@ from app.api.v1 import (
     findings,
     reports,
     schedules,
+    scan_configuration,
+    evidence,
+    dashboard,
 )
 
 api_router = APIRouter()
@@ -23,3 +26,6 @@ api_router.include_router(scans.router, prefix="/scans", tags=["Scans"])
 api_router.include_router(findings.router, prefix="/findings", tags=["Findings"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
 api_router.include_router(schedules.router, prefix="/schedules", tags=["Schedules"])
+api_router.include_router(scan_configuration.router, prefix="/scan-configuration", tags=["Scan Configuration"])
+api_router.include_router(evidence.router, prefix="/evidence", tags=["Evidence"])
+api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])

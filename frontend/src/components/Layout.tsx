@@ -10,6 +10,7 @@ import {
   CalendarIcon,
   DocumentChartBarIcon,
   ArrowRightOnRectangleIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline'
 import clsx from 'clsx'
 import { useAuthStore } from '../stores/authStore'
@@ -22,6 +23,10 @@ const navigation = [
   { name: 'Scans', href: '/scans', icon: DocumentMagnifyingGlassIcon },
   { name: 'Schedules', href: '/schedules', icon: CalendarIcon },
   { name: 'Reports', href: '/reports', icon: DocumentChartBarIcon },
+]
+
+const adminNavigation = [
+  { name: 'Settings', href: '/settings', icon: Cog6ToothIcon },
 ]
 
 export default function Layout() {
@@ -129,6 +134,39 @@ export default function Layout() {
                             ))}
                           </ul>
                         </li>
+                        {/* Admin navigation - only visible to admin users */}
+                        {user?.role === 'admin' && (
+                          <li>
+                            <div className="text-xs font-semibold leading-6 text-primary-300">Admin</div>
+                            <ul role="list" className="-mx-2 mt-2 space-y-1">
+                              {adminNavigation.map((item) => (
+                                <li key={item.name}>
+                                  <Link
+                                    to={item.href}
+                                    className={clsx(
+                                      location.pathname === item.href
+                                        ? 'bg-primary-800 text-white'
+                                        : 'text-primary-200 hover:text-white hover:bg-primary-800',
+                                      'group flex gap-x-3 rounded-md p-2 text-sm leading-6 font-semibold'
+                                    )}
+                                    onClick={() => setSidebarOpen(false)}
+                                  >
+                                    <item.icon
+                                      className={clsx(
+                                        location.pathname === item.href
+                                          ? 'text-white'
+                                          : 'text-primary-200 group-hover:text-white',
+                                        'h-6 w-6 shrink-0'
+                                      )}
+                                      aria-hidden="true"
+                                    />
+                                    {item.name}
+                                  </Link>
+                                </li>
+                              ))}
+                            </ul>
+                          </li>
+                        )}
                       </ul>
                     </nav>
                   </div>
@@ -175,6 +213,39 @@ export default function Layout() {
                   </ul>
                 </li>
 
+                {/* Admin navigation - only visible to admin users */}
+                {user?.role === 'admin' && (
+                  <li>
+                    <div className="text-xs font-semibold leading-6 text-primary-300">Admin</div>
+                    <ul role="list" className="-mx-2 mt-2 space-y-1">
+                      {adminNavigation.map((item) => (
+                        <li key={item.name}>
+                          <Link
+                            to={item.href}
+                            className={clsx(
+                              location.pathname === item.href
+                                ? 'bg-primary-800 text-white'
+                                : 'text-primary-200 hover:text-white hover:bg-primary-800',
+                              'group flex gap-x-3 rounded-md p-2 text-sm leading-6 font-semibold'
+                            )}
+                          >
+                            <item.icon
+                              className={clsx(
+                                location.pathname === item.href
+                                  ? 'text-white'
+                                  : 'text-primary-200 group-hover:text-white',
+                                'h-6 w-6 shrink-0'
+                              )}
+                              aria-hidden="true"
+                            />
+                            {item.name}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                )}
+
                 <li className="mt-auto">
                   <div className="flex items-center gap-x-4 px-2 py-3 text-sm text-primary-200">
                     <div className="flex-1">
@@ -211,7 +282,7 @@ export default function Layout() {
             <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
               <div className="flex flex-1 items-center">
                 <h1 className="text-lg font-semibold text-gray-900">
-                  DPDP GUI Compliance Scanner
+                  DPDP Compliance Scanning Toolkit
                 </h1>
               </div>
             </div>

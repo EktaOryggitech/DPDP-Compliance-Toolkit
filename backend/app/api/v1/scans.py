@@ -29,6 +29,28 @@ from app.models.finding import FindingSeverity
 router = APIRouter()
 
 
+def get_screenshot_url(screenshot_path: Optional[str]) -> Optional[str]:
+    """Generate proxy URL for a screenshot if it exists.
+
+    Instead of using MinIO presigned URLs (which have signature issues
+    when accessed from browser), we use a proxy endpoint that serves
+    the image through the backend.
+    """
+    if not screenshot_path:
+        return None
+
+    try:
+        # Convert MinIO path to proxy URL
+        # Path format: scans/{scan_id}/{year}/{month}/{day}/{filename}.jpg
+        # URL format: /api/v1/evidence/screenshot/{scan_id}/{year}/{month}/{day}/{filename}.jpg
+        if screenshot_path.startswith("scans/"):
+            return f"/api/v1/evidence/screenshot/{screenshot_path[6:]}"
+        return None
+    except Exception as e:
+        print(f"Error generating screenshot URL: {e}")
+        return None
+
+
 @router.get("/summary", response_model=ScanSummary)
 async def get_scans_summary(
     db: DbSession,
@@ -204,19 +226,11 @@ async def get_scan(
                 "info": 0,
             }
 
-        # Add finding to page group
-        page_findings_map[page_url]["findings"].append(FindingSummary(
-            id=finding.id,
-            title=finding.title,
-            severity=finding.severity,
-            status=finding.status,
-            check_type=finding.check_type,
-            dpdp_section=finding.dpdp_section,
-            description=finding.description,
-            remediation=finding.remediation,
-            element_selector=finding.element_selector,
-            extra_data=finding.extra_data,
-        ))
+        # Add finding to page group (will add screenshot_url later)
+        page_findings_map[page_url]["findings"].append({
+            "finding": finding,
+            "summary": None,  # Will be populated with screenshot_url
+        })
 
         # Count by severity
         if finding.severity == FindingSeverity.CRITICAL:
@@ -230,18 +244,38 @@ async def get_scan(
         else:
             page_findings_map[page_url]["info"] += 1
 
-    # Build findings_by_page list
+    # Build findings_by_page list with screenshot URLs
     findings_by_page = []
     for page_url, page_data in page_findings_map.items():
+        # Generate screenshot URLs for each finding
+        findings_with_urls = []
+        for item in page_data["findings"]:
+            finding = item["finding"]
+            screenshot_url = get_screenshot_url(finding.screenshot_path)
+            findings_with_urls.append(FindingSummary(
+                id=finding.id,
+                title=finding.title,
+                severity=finding.severity,
+                status=finding.status,
+                check_type=finding.check_type,
+                dpdp_section=finding.dpdp_section,
+                description=finding.description,
+                remediation=finding.remediation,
+                element_selector=finding.element_selector,
+                extra_data=finding.extra_data,
+                screenshot_path=finding.screenshot_path,
+                screenshot_url=screenshot_url,
+            ))
+
         findings_by_page.append(FindingsByPage(
             page_url=page_url,
-            findings_count=len(page_data["findings"]),
+            findings_count=len(findings_with_urls),
             critical_count=page_data["critical"],
             high_count=page_data["high"],
             medium_count=page_data["medium"],
             low_count=page_data["low"],
             info_count=page_data["info"],
-            findings=page_data["findings"],
+            findings=findings_with_urls,
         ))
 
     # Sort by findings count (most findings first)
@@ -345,6 +379,88 @@ async def cancel_scan(
     return Message(message="Scan cancelled successfully")
 
 
+@router.post("/bulk-delete", response_model=Message)
+async def bulk_delete_scans(
+    scan_ids: List[uuid.UUID],
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """
+    Delete multiple scans and their findings.
+    Skips running scans.
+    """
+    if not scan_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No scan IDs provided",
+        )
+
+    # Get scans that are not running
+    result = await db.execute(
+        select(Scan).where(
+            Scan.id.in_(scan_ids),
+            Scan.status != ScanStatus.RUNNING
+        )
+    )
+    scans_to_delete = result.scalars().all()
+
+    deleted_count = 0
+    for scan in scans_to_delete:
+        # Delete associated findings
+        await db.execute(
+            Finding.__table__.delete().where(Finding.scan_id == scan.id)
+        )
+        # Delete the scan
+        await db.delete(scan)
+        deleted_count += 1
+
+    await db.commit()
+
+    skipped = len(scan_ids) - deleted_count
+    if skipped > 0:
+        return Message(message=f"Deleted {deleted_count} scans. {skipped} running scan(s) skipped.")
+    return Message(message=f"Deleted {deleted_count} scans successfully")
+
+
+@router.delete("/all", response_model=Message)
+async def delete_all_scans(
+    db: DbSession,
+    current_user: CurrentUser,
+):
+    """
+    Delete all scans and their findings (except running scans).
+    """
+    # Get count of running scans
+    running_result = await db.execute(
+        select(func.count()).select_from(
+            select(Scan).where(Scan.status == ScanStatus.RUNNING).subquery()
+        )
+    )
+    running_count = running_result.scalar() or 0
+
+    # Get all non-running scans
+    result = await db.execute(
+        select(Scan).where(Scan.status != ScanStatus.RUNNING)
+    )
+    scans_to_delete = result.scalars().all()
+
+    deleted_count = 0
+    for scan in scans_to_delete:
+        # Delete associated findings
+        await db.execute(
+            Finding.__table__.delete().where(Finding.scan_id == scan.id)
+        )
+        # Delete the scan
+        await db.delete(scan)
+        deleted_count += 1
+
+    await db.commit()
+
+    if running_count > 0:
+        return Message(message=f"Deleted {deleted_count} scans. {running_count} running scan(s) skipped.")
+    return Message(message=f"Deleted {deleted_count} scans successfully")
+
+
 @router.delete("/{scan_id}", response_model=Message)
 async def delete_scan(
     scan_id: uuid.UUID,
@@ -428,6 +544,8 @@ async def get_scan_progress(
     """
     Get current scan progress (for polling fallback).
     """
+    from datetime import datetime
+
     result = await db.execute(select(Scan).where(Scan.id == scan_id))
     scan = result.scalar_one_or_none()
 
@@ -438,25 +556,47 @@ async def get_scan_progress(
         )
 
     # Calculate progress percentage
+    total_pages = scan.total_pages or 100
     if scan.status == ScanStatus.COMPLETED:
         percent = 100
     elif scan.status == ScanStatus.RUNNING:
-        # Estimate based on pages scanned vs expected
-        max_pages = 100  # Could be from config
-        percent = min(int((scan.pages_scanned / max_pages) * 100), 99)
+        if total_pages > 0:
+            percent = min(int((scan.pages_scanned / total_pages) * 100), 99)
+        else:
+            percent = 0
     elif scan.status in [ScanStatus.PENDING, ScanStatus.QUEUED]:
         percent = 0
     else:
         percent = 100  # Failed/cancelled
+
+    # Calculate timing
+    elapsed_seconds = None
+    estimated_remaining = None
+    if scan.started_at:
+        elapsed = (datetime.utcnow() - scan.started_at).total_seconds()
+        elapsed_seconds = int(elapsed)
+
+        # Estimate remaining time
+        if scan.status == ScanStatus.RUNNING and scan.pages_scanned > 0 and total_pages > 0:
+            time_per_page = elapsed / scan.pages_scanned
+            remaining_pages = total_pages - scan.pages_scanned
+            estimated_remaining = int(time_per_page * remaining_pages)
 
     return ScanProgress(
         scan_id=scan_id,
         status=scan.status.value,
         percent=percent,
         pages_scanned=scan.pages_scanned,
+        total_pages=total_pages,
         findings_count=scan.findings_count,
-        current_url=None,
+        critical_count=scan.critical_count or 0,
+        high_count=scan.high_count or 0,
+        medium_count=scan.medium_count or 0,
+        low_count=scan.low_count or 0,
+        current_url=scan.current_url if hasattr(scan, 'current_url') else None,
         message=scan.status_message or f"Status: {scan.status.value}",
+        elapsed_seconds=elapsed_seconds,
+        estimated_remaining_seconds=estimated_remaining,
     )
 
 

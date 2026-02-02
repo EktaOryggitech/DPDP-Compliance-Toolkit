@@ -1,9 +1,10 @@
 """
 DPDP GUI Compliance Scanner - Schedules API Routes
 """
-from datetime import time
+from datetime import datetime, time, timedelta
 from typing import List, Optional
 import uuid
+import pytz
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -14,6 +15,61 @@ from app.api.deps import CurrentUser, DbSession
 from app.models.application import Application
 from app.models.schedule import ScanSchedule, ScheduleFrequency
 from app.schemas.common import Message
+
+
+def calculate_next_run(frequency: ScheduleFrequency, time_of_day: time, timezone: str,
+                       day_of_week: Optional[int] = None, day_of_month: Optional[int] = None) -> datetime:
+    """Calculate the next run time based on schedule configuration."""
+    try:
+        tz = pytz.timezone(timezone)
+    except:
+        tz = pytz.timezone("Asia/Kolkata")
+
+    now = datetime.now(tz)
+
+    # Create a datetime for today at the scheduled time
+    scheduled_time = tz.localize(datetime.combine(now.date(), time_of_day))
+
+    if frequency == ScheduleFrequency.DAILY:
+        # If today's time has passed, schedule for tomorrow
+        if scheduled_time <= now:
+            scheduled_time += timedelta(days=1)
+        return scheduled_time.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    elif frequency == ScheduleFrequency.WEEKLY:
+        # day_of_week: 0=Monday, 6=Sunday
+        days_ahead = day_of_week - now.weekday()
+        if days_ahead < 0 or (days_ahead == 0 and scheduled_time <= now):
+            days_ahead += 7
+        scheduled_time = tz.localize(datetime.combine(now.date() + timedelta(days=days_ahead), time_of_day))
+        return scheduled_time.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    elif frequency == ScheduleFrequency.BIWEEKLY:
+        days_ahead = day_of_week - now.weekday() if day_of_week else 0
+        if days_ahead < 0 or (days_ahead == 0 and scheduled_time <= now):
+            days_ahead += 14
+        scheduled_time = tz.localize(datetime.combine(now.date() + timedelta(days=days_ahead), time_of_day))
+        return scheduled_time.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    elif frequency == ScheduleFrequency.MONTHLY:
+        # Find next occurrence of day_of_month
+        target_day = day_of_month or 1
+        next_month = now.replace(day=1) + timedelta(days=32)
+        next_month = next_month.replace(day=1)
+
+        try:
+            scheduled_time = tz.localize(datetime.combine(now.replace(day=target_day), time_of_day))
+            if scheduled_time <= now:
+                # Schedule for next month
+                scheduled_time = tz.localize(datetime.combine(next_month.replace(day=target_day), time_of_day))
+        except ValueError:
+            # Day doesn't exist in this month (e.g., Feb 30)
+            scheduled_time = tz.localize(datetime.combine(next_month.replace(day=target_day), time_of_day))
+
+        return scheduled_time.astimezone(pytz.UTC).replace(tzinfo=None)
+
+    # Default: tomorrow at scheduled time
+    return (scheduled_time + timedelta(days=1)).astimezone(pytz.UTC).replace(tzinfo=None)
 
 router = APIRouter()
 
@@ -49,8 +105,8 @@ class ScheduleResponse(BaseModel):
     time_of_day: time
     timezone: str
     is_active: bool
-    last_run_at: Optional[str]
-    next_run_at: Optional[str]
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
     run_count: int
 
     class Config:
@@ -148,6 +204,15 @@ async def create_schedule(
             detail="day_of_month is required for monthly schedules",
         )
 
+    # Calculate next run time
+    next_run = calculate_next_run(
+        frequency=request.frequency,
+        time_of_day=request.time_of_day,
+        timezone=request.timezone,
+        day_of_week=request.day_of_week,
+        day_of_month=request.day_of_month,
+    )
+
     schedule = ScanSchedule(
         application_id=request.application_id,
         frequency=request.frequency,
@@ -155,9 +220,8 @@ async def create_schedule(
         day_of_month=request.day_of_month,
         time_of_day=request.time_of_day,
         timezone=request.timezone,
+        next_run_at=next_run,
     )
-
-    # TODO: Calculate next_run_at
 
     db.add(schedule)
     await db.commit()
@@ -191,7 +255,15 @@ async def update_schedule(
     for field, value in update_data.items():
         setattr(schedule, field, value)
 
-    # TODO: Recalculate next_run_at if frequency/time changed
+    # Recalculate next_run_at if schedule parameters changed
+    if any(key in update_data for key in ['frequency', 'time_of_day', 'day_of_week', 'day_of_month', 'timezone']):
+        schedule.next_run_at = calculate_next_run(
+            frequency=schedule.frequency,
+            time_of_day=schedule.time_of_day,
+            timezone=schedule.timezone,
+            day_of_week=schedule.day_of_week,
+            day_of_month=schedule.day_of_month,
+        )
 
     await db.commit()
     await db.refresh(schedule)

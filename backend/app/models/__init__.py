@@ -9,6 +9,7 @@ from app.models.evidence import Evidence, EvidenceType
 from app.models.schedule import ScanSchedule, ScheduleFrequency
 from app.models.compliance_rule import ComplianceRule
 from app.models.user import User, UserRole
+from app.models.scan_configuration import ScanConfiguration
 
 __all__ = [
     "Organization",
@@ -26,4 +27,5 @@ __all__ = [
     "ComplianceRule",
     "User",
     "UserRole",
+    "ScanConfiguration",
 ]

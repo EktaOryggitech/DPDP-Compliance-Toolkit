@@ -269,6 +269,9 @@ class EvidenceStorage:
         """
         Generate a presigned URL for viewing/downloading evidence.
 
+        Note: For browser access, use the /api/v1/evidence/screenshot endpoint
+        instead of presigned URLs to avoid signature issues with Docker networking.
+
         Args:
             object_path: Path to object in bucket
             expires_hours: URL expiration time in hours
@@ -277,11 +280,12 @@ class EvidenceStorage:
             Presigned URL string
         """
         def _get_url():
-            return self.client.presigned_get_object(
+            url = self.client.presigned_get_object(
                 self.bucket_name,
                 object_path,
                 expires=timedelta(hours=expires_hours),
             )
+            return url
 
         return await asyncio.to_thread(_get_url)
 

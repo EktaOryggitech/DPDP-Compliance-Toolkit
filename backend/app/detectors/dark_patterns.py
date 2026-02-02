@@ -8,7 +8,7 @@ import re
 from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup, Tag
 
-from app.detectors.base import BaseDetector
+from app.detectors.base import BaseDetector, generate_css_selector
 from app.models.finding import CheckType, Finding, FindingSeverity, FindingStatus
 from app.scanners.web.crawler import CrawledPage
 
@@ -139,7 +139,7 @@ class DarkPatternDetector(BaseDetector):
                         title="Confirmshaming detected",
                         description=f"Button/link uses guilt-inducing language: '{text[:100]}'. This manipulates users into making choices they might not want.",
                         location=page.url,
-                        element_selector=code_before,
+                        element_selector=generate_css_selector(element),
                         dpdp_section=self.dpdp_section,
                         remediation="Use neutral language for decline options, e.g., 'No, thanks' or 'Decline'.",
                         extra_data={
@@ -221,7 +221,7 @@ class DarkPatternDetector(BaseDetector):
                         title="Important information in very small text",
                         description=f"Important consent/privacy-related text is displayed in very small font ({current_font_size}px): '{text[:100]}'",
                         location=page.url,
-                        element_selector=code_before,
+                        element_selector=generate_css_selector(small),
                         dpdp_section=self.dpdp_section,
                         remediation="Display important privacy and consent information in readable font sizes (at least 12px).",
                         extra_data={
@@ -337,6 +337,15 @@ class DarkPatternDetector(BaseDetector):
   </a>
 </div>'''
 
+                # Try to find a relevant container element for the screenshot
+                main_content = (
+                    soup.find("main") or
+                    soup.find(class_=re.compile(r'(settings|account|profile|content|container)', re.I)) or
+                    soup.find("article") or
+                    soup.find("section")
+                )
+                element_selector = generate_css_selector(main_content) if main_content else "main, article, section, .content"
+
                 findings.append(Finding(
                     check_type=CheckType.DARK_PATTERN_HIDDEN_OPTION,
                     severity=FindingSeverity.HIGH,
@@ -344,6 +353,7 @@ class DarkPatternDetector(BaseDetector):
                     title="No account deletion/cancellation option found (Roach Motel)",
                     description="Account settings page does not show clear options to delete account, unsubscribe, or cancel services. Users can easily sign up but cannot easily leave.",
                     location=page.url,
+                    element_selector=element_selector,
                     dpdp_section=self.dpdp_section,
                     remediation="Provide clear and accessible options to delete account, unsubscribe, and cancel services. DPDP Section 6(6) requires easy withdrawal.",
                     extra_data={
@@ -401,7 +411,7 @@ class DarkPatternDetector(BaseDetector):
                         title="Misleading close/dismiss button",
                         description=f"Button labeled '{btn_text}' appears to dismiss but actually triggers consent/subscription action.",
                         location=page.url,
-                        element_selector=str(btn)[:500],
+                        element_selector=generate_css_selector(btn),
                         dpdp_section=self.dpdp_section,
                         remediation="Ensure button labels accurately describe their action. Close buttons should only close, not consent.",
                     ))
@@ -437,7 +447,7 @@ class DarkPatternDetector(BaseDetector):
                     title="Important privacy information in collapsed/hidden section",
                     description="Key data processing information is hidden in an expandable section, making it less visible to users.",
                     location=page.url,
-                    element_selector=str(container)[:500],
+                    element_selector=generate_css_selector(container),
                     dpdp_section=self.dpdp_section,
                     remediation="Display important privacy and data sharing information prominently, not in collapsed sections.",
                 ))

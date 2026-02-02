@@ -23,6 +23,13 @@ class ScanProgress:
     current_url: Optional[str] = None
     findings_count: int = 0
     pages_scanned: int = 0
+    total_pages: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    elapsed_seconds: int = 0
+    estimated_remaining_seconds: Optional[int] = None
     timestamp: str = None
 
     def __post_init__(self):
@@ -244,6 +251,12 @@ class ScanProgressReporter:
         self._current_step = 0
         self._findings_count = 0
         self._pages_scanned = 0
+        self._total_pages = 0
+        self._critical_count = 0
+        self._high_count = 0
+        self._medium_count = 0
+        self._low_count = 0
+        self._started_at: Optional[datetime] = None
 
     async def connect(self):
         """Connect to Redis for pub/sub."""
@@ -264,6 +277,42 @@ class ScanProgressReporter:
     def set_total_steps(self, total: int):
         """Set the total number of steps."""
         self._total_steps = total
+
+    def set_total_pages(self, total: int):
+        """Set the total number of pages to scan."""
+        self._total_pages = total
+
+    def start_timer(self):
+        """Start the scan timer."""
+        self._started_at = datetime.utcnow()
+
+    def increment_severity(self, severity: str):
+        """Increment severity count."""
+        if severity == "critical":
+            self._critical_count += 1
+        elif severity == "high":
+            self._high_count += 1
+        elif severity == "medium":
+            self._medium_count += 1
+        elif severity == "low":
+            self._low_count += 1
+
+    def _calculate_timing(self) -> tuple:
+        """Calculate elapsed and estimated remaining time."""
+        if not self._started_at:
+            return 0, None
+
+        elapsed = (datetime.utcnow() - self._started_at).total_seconds()
+        elapsed_seconds = int(elapsed)
+
+        # Estimate remaining time based on pages scanned
+        estimated_remaining = None
+        if self._pages_scanned > 0 and self._total_pages > 0:
+            time_per_page = elapsed / self._pages_scanned
+            remaining_pages = self._total_pages - self._pages_scanned
+            estimated_remaining = int(time_per_page * remaining_pages)
+
+        return elapsed_seconds, estimated_remaining
 
     async def update(
         self,
@@ -292,6 +341,7 @@ class ScanProgressReporter:
         self._pages_scanned += increment_pages
 
         percent = int((self._current_step / self._total_steps) * 100)
+        elapsed_seconds, estimated_remaining = self._calculate_timing()
 
         progress = ScanProgress(
             scan_id=self.scan_id,
@@ -303,6 +353,13 @@ class ScanProgressReporter:
             current_url=current_url,
             findings_count=self._findings_count,
             pages_scanned=self._pages_scanned,
+            total_pages=self._total_pages,
+            critical_count=self._critical_count,
+            high_count=self._high_count,
+            medium_count=self._medium_count,
+            low_count=self._low_count,
+            elapsed_seconds=elapsed_seconds,
+            estimated_remaining_seconds=estimated_remaining,
         )
 
         await self._publish(progress)

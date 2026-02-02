@@ -39,6 +39,8 @@ class FindingResponse(BaseModel):
     description: Optional[str]
     remediation: Optional[str]
     extra_data: Optional[Dict] = None  # Detailed finding data (code fixes, visual representation, etc.)
+    screenshot_path: Optional[str] = None  # MinIO storage path for violation screenshot
+    screenshot_url: Optional[str] = None  # Presigned URL for viewing screenshot
     created_at: datetime
 
     class Config:
@@ -119,6 +121,8 @@ class FindingSummary(BaseModel):
     remediation: Optional[str] = None
     element_selector: Optional[str] = None
     extra_data: Optional[Dict] = None  # Detailed finding data
+    screenshot_path: Optional[str] = None
+    screenshot_url: Optional[str] = None
 
     class Config:
         from_attributes = True

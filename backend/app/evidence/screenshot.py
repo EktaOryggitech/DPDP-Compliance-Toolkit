@@ -322,3 +322,358 @@ class ScreenshotCapture:
         import shutil
         if os.path.exists(self.output_dir):
             shutil.rmtree(self.output_dir, ignore_errors=True)
+
+    async def annotate_element(
+        self,
+        screenshot: AnnotatedScreenshot,
+        element_box: Dict[str, float],
+        label: str = None,
+        color: Tuple[int, int, int] = (255, 0, 0),  # Red
+        border_width: int = 6,
+    ) -> AnnotatedScreenshot:
+        """
+        Annotate a screenshot with a highlighted element box.
+
+        Args:
+            screenshot: The screenshot to annotate
+            element_box: Bounding box dict with x, y, width, height
+            label: Optional label text to add
+            color: RGB color tuple for the border
+            border_width: Width of the border in pixels
+
+        Returns:
+            Updated AnnotatedScreenshot with annotated_path set
+        """
+        if not PIL_AVAILABLE:
+            print("[Screenshot] PIL not available, skipping annotation")
+            return screenshot
+
+        if not element_box:
+            print("[Screenshot] No element_box provided, skipping annotation")
+            return screenshot
+
+        def _annotate():
+            from PIL import ImageDraw, ImageFont
+
+            # Open the original screenshot
+            img = Image.open(screenshot.original_path)
+            print(f"[Screenshot] Annotating image size: {img.size}")
+            print(f"[Screenshot] Element box received: {element_box}")
+
+            # Get box coordinates - use float values directly, convert to int for drawing
+            x = int(float(element_box.get("x", 0)))
+            y = int(float(element_box.get("y", 0)))
+            width = int(float(element_box.get("width", 100)))
+            height = int(float(element_box.get("height", 50)))
+
+            print(f"[Screenshot] Drawing annotation at: x={x}, y={y}, width={width}, height={height}")
+
+            # Ensure minimum dimensions for visibility
+            width = max(width, 10)
+            height = max(height, 10)
+
+            # Ensure coordinates are within image bounds
+            x = max(0, min(x, img.width - 10))
+            y = max(0, min(y, img.height - 10))
+            width = min(width, img.width - x)
+            height = min(height, img.height - y)
+
+            # Convert to RGBA for overlay
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+
+            # Create a light red semi-transparent overlay on the element area
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+
+            # Draw light red overlay on the element (semi-transparent red highlight)
+            overlay_draw.rectangle(
+                [x, y, x + width, y + height],
+                fill=(255, 0, 0, 50)  # Light red tint
+            )
+
+            # Composite the red highlight overlay
+            img = Image.alpha_composite(img, overlay)
+
+            # Create drawing context for borders and label
+            draw = ImageDraw.Draw(img)
+
+            # Draw thick red rectangle border around the element
+            for i in range(border_width):
+                draw.rectangle(
+                    [x - i, y - i, x + width + i, y + height + i],
+                    outline=color
+                )
+
+            # Add corner markers for extra visibility
+            corner_size = max(10, min(20, width // 4, height // 4))
+            corner_width = 4
+
+            # Top-left corner
+            draw.line([(x, y), (x + corner_size, y)], fill=color, width=corner_width)
+            draw.line([(x, y), (x, y + corner_size)], fill=color, width=corner_width)
+
+            # Top-right corner
+            draw.line([(x + width, y), (x + width - corner_size, y)], fill=color, width=corner_width)
+            draw.line([(x + width, y), (x + width, y + corner_size)], fill=color, width=corner_width)
+
+            # Bottom-left corner
+            draw.line([(x, y + height), (x + corner_size, y + height)], fill=color, width=corner_width)
+            draw.line([(x, y + height), (x, y + height - corner_size)], fill=color, width=corner_width)
+
+            # Bottom-right corner
+            draw.line([(x + width, y + height), (x + width - corner_size, y + height)], fill=color, width=corner_width)
+            draw.line([(x + width, y + height), (x + width, y + height - corner_size)], fill=color, width=corner_width)
+
+            # Add label if provided
+            if label:
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+                except:
+                    try:
+                        font = ImageFont.truetype("/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 18)
+                    except:
+                        font = ImageFont.load_default()
+
+                # Position label above the box
+                label_y = max(y - 30, 5)
+                label_x = x
+
+                # Draw label background (red box with white text)
+                bbox = draw.textbbox((label_x, label_y), label, font=font)
+                padding = 6
+                draw.rectangle(
+                    [bbox[0] - padding, bbox[1] - padding, bbox[2] + padding, bbox[3] + padding],
+                    fill=color
+                )
+                draw.text((label_x, label_y), label, fill=(255, 255, 255), font=font)
+
+            # Save annotated version
+            annotated_id = f"{screenshot.id}_annotated"
+            annotated_filename = f"{annotated_id}.jpg"
+            annotated_filepath = os.path.join(self.output_dir, annotated_filename)
+
+            # Convert back to RGB for JPEG
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+
+            img.save(annotated_filepath, "JPEG", quality=settings.SCREENSHOT_QUALITY)
+            print(f"[Screenshot] Annotated screenshot saved: {annotated_filepath}")
+
+            return annotated_filepath
+
+        try:
+            annotated_path = await asyncio.to_thread(_annotate)
+
+            # Update screenshot with annotation info
+            screenshot.annotated_path = annotated_path
+            screenshot.annotations.append({
+                "type": "element_highlight",
+                "box": element_box,
+                "label": label,
+                "color": color,
+            })
+        except Exception as e:
+            print(f"[Screenshot] Error during annotation: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return screenshot
+
+    async def capture_and_annotate_element(
+        self,
+        page: "Page",
+        url: str,
+        selector: str,
+        label: str = "VIOLATION",
+    ) -> Optional[AnnotatedScreenshot]:
+        """
+        Capture a viewport screenshot with the violating element highlighted.
+
+        Shows the element IN CONTEXT with surrounding content, not just the element itself.
+        The element is highlighted with a red border so it stands out.
+
+        Args:
+            page: Playwright page object
+            url: URL being captured
+            selector: CSS selector for the element to capture
+            label: Label to show on the annotation
+
+        Returns:
+            AnnotatedScreenshot of viewport with element highlighted, or None if element not found
+        """
+        try:
+            print(f"[Screenshot] Looking for element: {selector}")
+
+            # First, try to find the element
+            element = await page.query_selector(selector)
+            if not element:
+                print(f"[Screenshot] Element not found: {selector} - skipping screenshot")
+                return None
+
+            # Scroll element into view (centered if possible)
+            try:
+                await element.scroll_into_view_if_needed()
+                await asyncio.sleep(0.3)
+            except Exception as scroll_error:
+                print(f"[Screenshot] Scroll error (continuing): {scroll_error}")
+
+            # Get element bounding box
+            bounding_box = await element.bounding_box()
+            if not bounding_box:
+                print(f"[Screenshot] Could not get bounding box for: {selector} - skipping screenshot")
+                return None
+
+            print(f"[Screenshot] Element bounding box: {bounding_box}")
+
+            # Inject CSS to highlight the element with a red border
+            try:
+                # Add highlight to the element using JavaScript
+                await element.evaluate('''el => {
+                    el.style.outline = "4px solid red";
+                    el.style.outlineOffset = "2px";
+                    el.style.boxShadow = "0 0 15px 5px rgba(255, 0, 0, 0.6)";
+                }''')
+                await asyncio.sleep(0.3)  # Wait for style to apply
+                print(f"[Screenshot] Applied red highlight to element")
+            except Exception as style_error:
+                print(f"[Screenshot] Could not apply highlight style: {style_error}")
+
+            # Capture viewport screenshot (shows element in context)
+            screenshot_id = str(uuid.uuid4())
+            filename = f"{screenshot_id}.jpg"
+            filepath = os.path.join(self.output_dir, filename)
+
+            try:
+                # Take viewport screenshot (not full page, not just element)
+                await page.screenshot(
+                    path=filepath,
+                    type="jpeg",
+                    quality=settings.SCREENSHOT_QUALITY,
+                    full_page=False  # Just the visible viewport
+                )
+                print(f"[Screenshot] Viewport screenshot captured with highlighted element: {filepath}")
+            except Exception as screenshot_error:
+                print(f"[Screenshot] Viewport screenshot failed: {screenshot_error} - skipping")
+                return None
+
+            # Try to remove the highlight (cleanup)
+            try:
+                await element.evaluate('el => { el.style.outline = ""; el.style.outlineOffset = ""; el.style.boxShadow = ""; }')
+            except:
+                pass  # Ignore cleanup errors
+
+            # Get viewport size for metadata
+            viewport = page.viewport_size or {"width": 1920, "height": 1080}
+
+            screenshot = AnnotatedScreenshot(
+                id=screenshot_id,
+                original_path=filepath,
+                annotated_path=filepath,  # Already annotated via CSS highlight
+                url_or_window=url,
+                timestamp=datetime.utcnow(),
+                width=viewport["width"],
+                height=viewport["height"],
+                metadata={
+                    "type": "viewport_with_highlight",
+                    "selector": selector,
+                    "element_bounding_box": bounding_box,
+                },
+            )
+
+            return screenshot
+
+        except Exception as e:
+            print(f"[Screenshot] Error capturing element screenshot: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    async def _add_red_border(
+        self,
+        screenshot: AnnotatedScreenshot,
+        label: str = "VIOLATION",
+        border_width: int = 8,
+        color: Tuple[int, int, int] = (255, 0, 0),
+    ) -> AnnotatedScreenshot:
+        """
+        Add a red border and label around a screenshot.
+
+        Args:
+            screenshot: The screenshot to add border to
+            label: Label text to add
+            border_width: Width of the red border
+            color: RGB color tuple for the border
+
+        Returns:
+            Screenshot with red border added
+        """
+        if not PIL_AVAILABLE:
+            return screenshot
+
+        def _add_border():
+            from PIL import ImageDraw, ImageFont, ImageOps
+
+            # Open the original screenshot
+            img = Image.open(screenshot.original_path)
+            print(f"[Screenshot] Adding red border to image: {img.size}")
+
+            # Add red border around the entire image
+            img_with_border = ImageOps.expand(img, border=border_width, fill=color)
+
+            # Create drawing context
+            draw = ImageDraw.Draw(img_with_border)
+
+            # Add label at the top
+            if label:
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+                except:
+                    try:
+                        font = ImageFont.truetype("/usr/share/fonts/liberation/LiberationSans-Bold.ttf", 16)
+                    except:
+                        font = ImageFont.load_default()
+
+                # Get text size
+                bbox = draw.textbbox((0, 0), label, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+
+                # Create label background at top-left
+                padding = 4
+                label_bg_height = text_height + padding * 2
+                draw.rectangle(
+                    [0, 0, text_width + padding * 2, label_bg_height],
+                    fill=color
+                )
+                draw.text((padding, padding), label, fill=(255, 255, 255), font=font)
+
+            # Save the bordered version
+            annotated_id = f"{screenshot.id}_bordered"
+            annotated_filename = f"{annotated_id}.jpg"
+            annotated_filepath = os.path.join(self.output_dir, annotated_filename)
+
+            # Convert to RGB if needed
+            if img_with_border.mode != "RGB":
+                img_with_border = img_with_border.convert("RGB")
+
+            img_with_border.save(annotated_filepath, "JPEG", quality=settings.SCREENSHOT_QUALITY)
+            print(f"[Screenshot] Bordered screenshot saved: {annotated_filepath}")
+
+            return annotated_filepath
+
+        try:
+            annotated_path = await asyncio.to_thread(_add_border)
+            screenshot.annotated_path = annotated_path
+            screenshot.annotations.append({
+                "type": "red_border",
+                "label": label,
+                "border_width": border_width,
+                "color": color,
+            })
+        except Exception as e:
+            print(f"[Screenshot] Error adding border: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return screenshot
